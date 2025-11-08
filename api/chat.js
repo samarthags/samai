@@ -37,7 +37,7 @@ export default async function handler(req, res) {
 
     const data = await response.json();
 
-    // Log the full response for debugging
+    // Log full Groq API response for debugging
     console.log("Groq API response:", JSON.stringify(data, null, 2));
 
     // Safely extract the model reply
@@ -47,6 +47,7 @@ export default async function handler(req, res) {
       "No reply from model";
 
     res.status(200).json({ reply });
+
   } catch (err) {
     console.error("Server error:", err);
     res.status(500).json({ error: "Server error", details: err.toString() });
