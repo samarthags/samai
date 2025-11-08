@@ -18,14 +18,16 @@ export default async function handler(req, res) {
   }
 
   try {
+    // Call Groq chat completions API
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${API_KEY}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Groq-Model-Version": "latest" // optional, but matches your Python example
       },
       body: JSON.stringify({
-        model: "mixtral-8x7b",
+        model: "groq/compound-mini",
         messages: [
           { role: "system", content: "You are Sam AI by Sagara, friendly, concise and helpful." },
           { role: "user", content: message }
@@ -37,13 +39,13 @@ export default async function handler(req, res) {
 
     const data = await response.json();
 
-    // Log full Groq API response for debugging
+    // Log full Groq response for debugging
     console.log("Groq API response:", JSON.stringify(data, null, 2));
 
-    // Safely extract the model reply
+    // Safely extract model reply
     const reply =
       data?.choices?.[0]?.message?.content || // preferred
-      data?.choices?.[0]?.text ||             // fallback if API returns text
+      data?.choices?.[0]?.text ||            // fallback
       "No reply from model";
 
     res.status(200).json({ reply });
