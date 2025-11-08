@@ -7,7 +7,7 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const bot = new TelegramBot(TOKEN, { polling: true });
 
 // Your Vercel API endpoint
-const API_URL = 'https://samai-pi.vercel.app/api/chat'; // replace with your deployed API URL
+const API_URL = 'https://samai-bakxo51cd-sammus-projects-bf03ae92.vercel.app/api/chat'; // replace with your deployed API URL
 
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
