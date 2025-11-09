@@ -3,7 +3,7 @@
 export default async function handler(req, res) {    
   if (req.method !== "POST") {    
     // Only POST is allowed    
-    return res.status(405).json({ reply: "SGS model server down" });    
+    return res.status(405).json({ reply: "Samarth's server down" });    
   }    
   
   const { message } = req.body || {};    
@@ -13,7 +13,7 @@ export default async function handler(req, res) {
   
   const API_KEY = process.env.GROQ_API_KEY;    
   if (!API_KEY) {    
-    return res.status(500).json({ reply: "SGS model server down" });    
+    return res.status(500).json({ reply: "Samarth's server down" });    
   }    
   
   try {    
@@ -65,7 +65,7 @@ Do not repeat marketing phrases or long paragraphs.
     const reply =    
       data?.choices?.[0]?.message?.content?.trim() ||    
       data?.choices?.[0]?.text?.trim() ||    
-      "SGS model server down";    
+      "Samarth's server down";    
   
     res.status(200).json({ reply });    
   
