@@ -2,6 +2,7 @@
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
+    // Only POST is allowed
     return res.status(405).json({ reply: "SGS model server down" });
   }
 
@@ -19,7 +20,7 @@ export default async function handler(req, res) {
     // System prompt with variations for Samartha GS info
     const systemPrompt = `
 You are Expo AI, a friendly AI chatbot.
-Answer naturally, concisely, and human-like.
+Answer naturally and human-like.
 If asked about Samartha GS or Expo AI:
 - Provide short factual answers (1–2 sentences).
 - Use variations to avoid repeating the same sentence.
@@ -28,7 +29,7 @@ Example responses:
 - "He is the developer behind Expo AI and a student from Sagara."
 - "Samartha GS is a student and full-stack developer from Sagara who created this AI."
 - "I was developed by Samartha GS using the SGS model."
-For all other questions, answer normally and concisely like a real AI.
+For all other questions, answer fully and in detail.
 Do not mention Groq, OpenAI, or other third-party platforms.
 Do not repeat marketing phrases or long paragraphs.
 `;
@@ -45,7 +46,7 @@ Do not repeat marketing phrases or long paragraphs.
           { role: "system", content: systemPrompt },
           { role: "user", content: message }
         ],
-        max_tokens: 600, // short responses
+        max_tokens: 4000,  // Increased for long answers
         temperature: 0.7
       })
     });
@@ -61,15 +62,10 @@ Do not repeat marketing phrases or long paragraphs.
     console.log("Expo AI API response:", JSON.stringify(data, null, 2));
 
     // Safely extract reply
-    let reply =
+    const reply =
       data?.choices?.[0]?.message?.content?.trim() ||
       data?.choices?.[0]?.text?.trim() ||
       "SGS model server down";
-
-    // Ensure reply is short
-    if (reply.length > 1250) {
-      reply = reply.slice(0, 250) + "...";
-    }
 
     res.status(200).json({ reply });
 
