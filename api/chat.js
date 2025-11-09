@@ -1,3 +1,6 @@
+import fetch from "node-fetch";
+import Tesseract from "tesseract.js";
+
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
@@ -10,37 +13,28 @@ export default async function handler(req, res) {
   try {
     let userContent;
 
-    switch (type) {
-      case "text":
-        userContent = message;
-        break;
-      case "photo":
-        userContent = `Analyze this image: ${message}`;
-        break;
-      case "sticker":
-        userContent = `User sent a sticker: ${message}`;
-        break;
-      case "audio":
-        userContent = `User sent an audio file: ${message}`;
-        break;
-      case "video":
-        userContent = `Analyze this video: ${message}`;
-        break;
-      default:
-        userContent = `Unsupported type: ${JSON.stringify(message)}`;
+    if (type === "text") {
+      userContent = message;
+    } else if (type === "photo") {
+      // Run OCR on image URL
+      const { data: { text: ocrText } } = await Tesseract.recognize(message, 'eng');
+      userContent = `Solve this problem:\n${ocrText}`;
+    } else {
+      userContent = `User sent ${type}: ${message}`;
     }
 
+    // Call Groq AI
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${API_KEY}`,
         "Content-Type": "application/json",
-        "Groq-Model-Version": "latest",
+        "Groq-Model-Version": "latest"
       },
       body: JSON.stringify({
         model: "groq/compound-mini",
         messages: [
-          { role: "system", content: "You are Sam AI by Sagara, friendly, concise, and helpful." },
+          { role: "system", content: "You are Sam AI by Sagara, friendly, concise, and helpful. Solve questions and analyze problems correctly." },
           { role: "user", content: userContent }
         ],
         max_tokens: 400,
@@ -50,6 +44,7 @@ export default async function handler(req, res) {
 
     const data = await response.json();
     const reply = data?.choices?.[0]?.message?.content || data?.choices?.[0]?.text || "No reply from model";
+
     res.status(200).json({ reply });
 
   } catch (err) {
