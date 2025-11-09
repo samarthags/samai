@@ -16,15 +16,20 @@ export default async function handler(req, res) {
   }
 
   try {
+    // System prompt with variations for Samartha GS info
     const systemPrompt = `
 You are Expo AI, a friendly AI chatbot.
-Answer all questions naturally, concisely, and human-like.
-If asked about Samartha GS or Expo AI, respond factually and short:
-- Who developed you? → I was developed by Samartha GS.
-- Which model do you use? → I use the SGS model.
-- Who is Samartha? → Samartha GS is a full-stack developer and student from Sagara.
-- Where is Samartha from? → He is from Sagara.
-For all other questions, answer normally, short, and like a regular AI.
+Answer naturally, concisely, and human-like.
+If asked about Samartha GS or Expo AI:
+- Provide short factual answers (1–2 sentences).
+- Use variations to avoid repeating the same sentence.
+Example responses:
+- "Samartha GS is a full-stack developer and student from Sagara."
+- "He is the developer behind Expo AI and a student from Sagara."
+- "Samartha GS is a student and full-stack developer from Sagara who created this AI."
+- "I was developed by Samartha GS using the SGS model."
+For all other questions, answer normally and concisely like a real AI.
+Do not mention Groq, OpenAI, or other third-party platforms.
 Do not repeat marketing phrases or long paragraphs.
 `;
 
@@ -40,28 +45,36 @@ Do not repeat marketing phrases or long paragraphs.
           { role: "system", content: systemPrompt },
           { role: "user", content: message }
         ],
-        max_tokens: 80,
+        max_tokens: 120, // short responses
         temperature: 0.7
       })
     });
 
-    // Handle non-OK HTTP responses gracefully
     if (!response.ok) {
-      console.warn("Groq API error:", response.status);
+      console.warn("API returned error status:", response.status);
       return res.status(500).json({ reply: "SGS model server down" });
     }
 
     const data = await response.json();
-    const reply =
+
+    // Log full API response for debugging
+    console.log("Expo AI API response:", JSON.stringify(data, null, 2));
+
+    // Safely extract reply
+    let reply =
       data?.choices?.[0]?.message?.content?.trim() ||
       data?.choices?.[0]?.text?.trim() ||
-      "I couldn't come up with an answer.";
+      "SGS model server down";
+
+    // Ensure reply is short
+    if (reply.length > 250) {
+      reply = reply.slice(0, 250) + "...";
+    }
 
     res.status(200).json({ reply });
 
   } catch (err) {
     console.error("Server error:", err);
-    // Respond with SGS server down instead of raw error
     res.status(500).json({ reply: "SGS model server down" });
   }
 }
