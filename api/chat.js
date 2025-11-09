@@ -1,29 +1,42 @@
+// api/chat.js
 import fetch from "node-fetch";
 import Tesseract from "tesseract.js";
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  // Only allow POST
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
-  const { message, type } = req.body || {};
-  if (!message) return res.status(400).json({ error: "No message provided" });
+  const { type, message } = req.body || {};
+  if (!message) {
+    return res.status(400).json({ error: "No message provided" });
+  }
 
   const API_KEY = process.env.GROQ_API_KEY;
   if (!API_KEY) return res.status(500).json({ error: "Missing API key" });
 
   try {
-    let userContent;
+    let userContent = "";
 
     if (type === "text") {
+      // Normal text input
       userContent = message;
     } else if (type === "photo") {
-      // Run OCR on image URL
-      const { data: { text: ocrText } } = await Tesseract.recognize(message, 'eng');
-      userContent = `Solve this problem:\n${ocrText}`;
+      // OCR for images
+      const { data: { text: ocrText } } = await Tesseract.recognize(message, "eng");
+      userContent = `Solve this problem or answer this question:\n${ocrText}`;
+    } else if (type === "sticker") {
+      userContent = `User sent a sticker: ${message}`;
+    } else if (type === "audio") {
+      userContent = `User sent an audio file: ${message}`;
+    } else if (type === "video") {
+      userContent = `User sent a video: ${message}`;
     } else {
-      userContent = `User sent ${type}: ${message}`;
+      userContent = `Unsupported type: ${type}`;
     }
 
-    // Call Groq AI
+    // Call Groq AI API
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -34,7 +47,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: "groq/compound-mini",
         messages: [
-          { role: "system", content: "You are Sam AI by Sagara, friendly, concise, and helpful. Solve questions and analyze problems correctly." },
+          { role: "system", content: "You are Sam AI by Sagara. Friendly, concise, helpful, solve problems and answer questions accurately." },
           { role: "user", content: userContent }
         ],
         max_tokens: 400,
@@ -43,7 +56,12 @@ export default async function handler(req, res) {
     });
 
     const data = await response.json();
-    const reply = data?.choices?.[0]?.message?.content || data?.choices?.[0]?.text || "No reply from model";
+
+    // Safely extract model reply
+    const reply =
+      data?.choices?.[0]?.message?.content || 
+      data?.choices?.[0]?.text || 
+      "No reply from model";
 
     res.status(200).json({ reply });
 
