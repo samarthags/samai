@@ -2,16 +2,17 @@
 
 import fetch from "node-fetch";
 
-// In-memory conversation store per user/session
+// In-memory conversation per user/session
 const conversationHistory = {};
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
-    // Only POST is allowed
     return res.status(405).json({ reply: "SGS model server down" });
   }
 
-  const { message, userId = "default" } = req.body || {};
+  const { message, userId } = req.body || {};
+  const userKey = userId || "default";
+
   if (!message || typeof message !== "string" || message.trim() === "") {
     return res.status(400).json({ reply: "Please send a valid message." });
   }
@@ -22,12 +23,11 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Initialize conversation for this user/session
-    if (!conversationHistory[userId]) {
-      conversationHistory[userId] = [];
+    // Initialize conversation for this user
+    if (!conversationHistory[userKey]) {
+      conversationHistory[userKey] = [];
     }
 
-    // System prompt (unchanged from your original)
     const systemPrompt = `
 You are Expo AI, a friendly AI chatbot.
 Answer naturally and human-like.
@@ -44,10 +44,10 @@ Do not mention Groq, OpenAI, or other third-party platforms.
 Do not repeat marketing phrases or long paragraphs.
 `;
 
-    // Build messages array with memory
+    // Build messages array for API
     const messages = [
       { role: "system", content: systemPrompt },
-      ...conversationHistory[userId],
+      ...conversationHistory[userKey].slice(-10), // keep last 10 for context
       { role: "user", content: message }
     ];
 
@@ -60,7 +60,7 @@ Do not repeat marketing phrases or long paragraphs.
       body: JSON.stringify({
         model: "groq/compound-mini",
         messages,
-        max_tokens: 4000,  // Increased for long answers
+        max_tokens: 4000,
         temperature: 0.7
       })
     });
@@ -72,26 +72,16 @@ Do not repeat marketing phrases or long paragraphs.
 
     const data = await response.json();
 
-    // Log full API response for debugging
-    console.log("Expo AI API response:", JSON.stringify(data, null, 2));
-
-    // Safely extract reply
     const reply =
       data?.choices?.[0]?.message?.content?.trim() ||
       data?.choices?.[0]?.text?.trim() ||
       "SGS model server down";
 
-    // Save user + assistant messages to memory for follow-ups
-    conversationHistory[userId].push({ role: "user", content: message });
-    conversationHistory[userId].push({ role: "assistant", content: reply });
-
-    // Optional: keep only last 20 messages to avoid token overflow
-    if (conversationHistory[userId].length > 20) {
-      conversationHistory[userId] = conversationHistory[userId].slice(-20);
-    }
+    // Save message + reply to conversation
+    conversationHistory[userKey].push({ role: "user", content: message });
+    conversationHistory[userKey].push({ role: "assistant", content: reply });
 
     res.status(200).json({ reply });
-
   } catch (err) {
     console.error("Server error:", err);
     res.status(500).json({ reply: "SGS model server down" });
