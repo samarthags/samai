@@ -1,20 +1,16 @@
 // api/chat.js
-
 import fetch from "node-fetch";
 
-// Firebase REST function
+// Helper: fetch profile from Firestore using API key (no service account)
 async function getMyWebSamUser(username) {
   if (!username) return null;
-
   try {
     const lowerUsername = username.toLowerCase();
     const url = `https://firestore.googleapis.com/v1/projects/newai-52371/databases/(default)/documents/profiles/${lowerUsername}`;
     const res = await fetch(url);
     if (!res.ok) return null;
     const data = await res.json();
-
     if (!data.fields) return null;
-
     return {
       name: data.fields.name?.stringValue || "No Name",
       bio: data.fields.bio?.stringValue || "No Bio",
@@ -42,7 +38,7 @@ export default async function handler(req, res) {
   if (!API_KEY) return res.status(500).json({ reply: "Samarth's server down" });
 
   try {
-    // Check if message is asking about a user
+    // Check for "Who is X" questions
     let userSystemPrompt = "";
     const match = message.match(/who is (\w+)/i);
     if (match) {
@@ -50,34 +46,28 @@ export default async function handler(req, res) {
       const userData = await getMyWebSamUser(username);
       if (userData) {
         userSystemPrompt = `
-Local MyWebSam user profile:
+You are answering about a MyWebSam user. Use ONLY this info:
 Name: ${userData.name}
 Bio: ${userData.bio}
-Date of Birth: ${userData.dob}
+DOB: ${userData.dob}
 Location: ${userData.location}
 Profile URL: ${userData.profileUrl}
-
-Answer only using this information if the question is about this user.
 `;
       } else {
-        userSystemPrompt = "No matching user found in MyWebSam. Politely indicate no information is available.";
+        userSystemPrompt = "No user found in MyWebSam. Politely indicate that.";
       }
     }
 
-    // Original system prompt
     const systemPrompt = `
-You are Expo AI, a friendly AI assistant that can answer any question naturally and helpfully.
+You are Expo AI, a friendly AI assistant.
 If asked about Samartha GS, provide a short factual answer:
-- He is a student from Sagara, passionate about AI and web development.
-- He is 18 years old.
-- He developed Expo AI.
+- Student from Sagara, passionate about AI and web development.
+- 18 years old.
+- Developed Expo AI.
 - Contact: samarthags.in
-Keep answers concise (1–2 sentences) and varied.
-For all other questions, answer fully, clearly, and naturally.
-Do not mention Groq, OpenAI, or any third-party platforms.
+Keep answers concise and natural.
 `;
 
-    // Build messages
     const messages = [
       { role: "system", content: systemPrompt }
     ];
@@ -88,7 +78,6 @@ Do not mention Groq, OpenAI, or any third-party platforms.
 
     messages.push({ role: "user", content: message });
 
-    // Call Groq API
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -109,11 +98,9 @@ Do not mention Groq, OpenAI, or any third-party platforms.
     }
 
     const data = await response.json();
-
-    const reply =
-      data?.choices?.[0]?.message?.content?.trim() ||
-      data?.choices?.[0]?.text?.trim() ||
-      "Samarth's server down";
+    const reply = data?.choices?.[0]?.message?.content?.trim() ||
+                  data?.choices?.[0]?.text?.trim() ||
+                  "Samarth's server down";
 
     res.status(200).json({ reply });
 
