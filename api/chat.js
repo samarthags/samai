@@ -1,3 +1,5 @@
+// api/chat.js
+
 import { siteData } from "../data/siteData.js";
 
 export default async function handler(req, res) {
@@ -6,74 +8,41 @@ export default async function handler(req, res) {
   }
 
   const { message } = req.body || {};
-  if (!message) {
+  if (!message || typeof message !== "string") {
     return res.status(400).json({ reply: "Invalid message" });
   }
 
-  const API_KEY = process.env.GROQ_API_KEY;
-  if (!API_KEY) {
-    return res.status(500).json({ reply: "Missing API key" });
-  }
-
   try {
-    // 🔍 SEARCH SITE CONTENT
-    const result = siteData.find(d =>
-      message.toLowerCase().includes(d.name.toLowerCase())
+    // 🔍 STEP 2: SEARCH WEBSITE DATA
+    const query = message.toLowerCase();
+
+    const result = siteData.find(item =>
+      query.includes(item.name.toLowerCase()) ||
+      query.includes(item.creator.toLowerCase())
     );
 
-    let context = "";
-    if (result) {
-      context = `
-Website data found:
-Project: ${result.name}
-Description: ${result.description}
-Features: ${result.features.join(", ")}
-Creator: ${result.creator}
-Website: ${result.url}
-
-Answer only using this data.
-`;
-    } else {
-      context = `
-No matching information found on mywebsam.site.
-Say politely that no data is available.
-`;
+    // ❌ If nothing found
+    if (!result) {
+      return res.status(200).json({
+        reply: "I couldn’t find any information about that on MyWebSam."
+      });
     }
 
-    const response = await fetch(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "groq/compound-mini",
-          messages: [
-            {
-              role: "system",
-              content:
-                "You are Expo AI. Answer like a website search assistant. Never guess.",
-            },
-            { role: "system", content: context },
-            { role: "user", content: message },
-          ],
-          temperature: 0.3,
-          max_tokens: 400,
-        }),
-      }
-    );
+    // ✅ Found result → answer like AI
+    const reply = `
+${result.name} is a project created by ${result.creator}.
+${result.description}
 
-    const data = await response.json();
-    const reply =
-      data?.choices?.[0]?.message?.content?.trim() ||
-      "No response generated";
+Key features include:
+- ${result.features.join("\n- ")}
 
-    res.status(200).json({ reply });
+You can create your profile here: ${result.createUrl}
+`.trim();
+
+    return res.status(200).json({ reply });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ reply: "Server error" });
+    console.error("ERROR:", err);
+    return res.status(500).json({ reply: "Server error" });
   }
 }
