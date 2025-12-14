@@ -1,58 +1,18 @@
 // api/chat.js
-import fetch from "node-fetch";
+import { initializeApp } from "firebase/app";
+import { getFirestore, doc, getDoc } from "firebase/firestore";
 
-// Fetch MyWebSam user by username using Firestore REST API
-async function getMyWebSamUser(username) {
-  if (!username) return null;
+const firebaseConfig = {
+  apiKey: "AIzaSyBb3x_zD9JaFwL9PhmngCNZlS2fOh6MBa4",
+  authDomain: "newai-52371.firebaseapp.com",
+  projectId: "newai-52371",
+  storageBucket: "newai-52371.appspot.com",
+  messagingSenderId: "480586908639",
+  appId: "1:480586908639:web:f4645a852c4df724c6fa6a"
+};
 
-  try {
-    const lowerUsername = username.toLowerCase();
-
-    const url = `https://firestore.googleapis.com/v1/projects/newai-52371/databases/(default)/documents:runQuery`;
-    const body = {
-      structuredQuery: {
-        from: [{ collectionId: "profiles" }],
-        where: {
-          fieldFilter: {
-            field: { fieldPath: "username" },
-            op: "EQUAL",
-            value: { stringValue: lowerUsername }
-          }
-        },
-        limit: 1
-      }
-    };
-
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
-
-    if (!res.ok) return null;
-
-    const data = await res.json();
-    if (!data || data.length === 0 || !data[0].document?.fields) return null;
-
-    const fields = data[0].document.fields;
-
-    return {
-      name: fields.name?.stringValue || "No Name",
-      bio: fields.bio?.stringValue || "No Bio",
-      dob: fields.birthday?.stringValue || "Unknown",
-      location: fields.location?.stringValue || "Unknown",
-      github: fields.github?.stringValue || "",
-      snapchat: fields.snapchat?.stringValue || "",
-      telegram: fields.telegram?.stringValue || "",
-      twitter: fields.twitter?.stringValue || "",
-      imageUrl: fields.imageUrl?.stringValue || "",
-      profileUrl: `https://mywebsam.site/${lowerUsername}`
-    };
-  } catch (err) {
-    console.error("Firebase REST error:", err);
-    return null;
-  }
-}
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -68,48 +28,37 @@ export default async function handler(req, res) {
   if (!API_KEY) return res.status(500).json({ reply: "Samarth's server down" });
 
   try {
-    // Detect if the question is about a user
-    let userSystemPrompt = "";
-    const match = message.match(/who is ([\w\s]+)/i); // captures multi-word usernames
-    if (match) {
-      const username = match[1].trim();
-      const userData = await getMyWebSamUser(username);
-
-      if (userData) {
-        userSystemPrompt = `
-You are answering about a MyWebSam user. Use ONLY this info:
-Name: ${userData.name}
-Bio: ${userData.bio}
-DOB: ${userData.dob}
-Location: ${userData.location}
-Github: ${userData.github}
-Snapchat: ${userData.snapchat}
-Telegram: ${userData.telegram}
-Twitter: ${userData.twitter}
-Profile URL: ${userData.profileUrl}
-Provide a concise and friendly answer using this info.
-`;
-      } else {
-        userSystemPrompt = "No user found in MyWebSam. Politely indicate that.";
+    let userPrompt = "";
+    // Check if message is asking about a MyWebSam user
+    const lowerMsg = message.toLowerCase();
+    if (lowerMsg.startsWith("who is ")) {
+      const username = lowerMsg.replace("who is ", "").trim();
+      try {
+        // Fetch by UID (if you know UID) or map username -> UID
+        const userDocRef = doc(db, "profiles", username); // assuming username = document ID
+        const userSnap = await getDoc(userDocRef);
+        if (userSnap.exists()) {
+          const data = userSnap.data();
+          userPrompt = `User Info: Name: ${data.name || ""}, Bio: ${data.bio || ""}, DOB: ${data.birthday || ""}, Location: ${data.location || ""}`;
+        }
+      } catch (e) {
+        console.warn("Firebase fetch error:", e.message);
       }
     }
 
-    // Old AI system prompt for everything else
     const systemPrompt = `
-You are Expo AI, a friendly AI assistant.
+You are Expo AI, a friendly AI assistant that can answer any question naturally and helpfully.
+${userPrompt ? userPrompt : ""}
 If asked about Samartha GS, provide a short factual answer:
-- Student from Sagara, passionate about AI and web development.
-- 18 years old.
-- Developed Expo AI.
+- He is a student from Sagara, passionate about AI and web development.
+- He is 18 years old.
+- He developed Expo AI.
 - Contact: samarthags.in
-Keep answers concise, natural, and helpful.
+Keep answers concise (1–2 sentences) and varied.
+For all other questions, answer fully, clearly, and naturally.
+Do not mention Groq, OpenAI, or any third-party platforms.
 `;
 
-    const messages = [{ role: "system", content: systemPrompt }];
-    if (userSystemPrompt) messages.push({ role: "system", content: userSystemPrompt });
-    messages.push({ role: "user", content: message });
-
-    // Call Groq API
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -118,13 +67,19 @@ Keep answers concise, natural, and helpful.
       },
       body: JSON.stringify({
         model: "groq/compound-mini",
-        messages,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: message }
+        ],
         max_tokens: 4000,
         temperature: 0.7
       })
     });
 
-    if (!response.ok) return res.status(500).json({ reply: "Samarth's server down" });
+    if (!response.ok) {
+      console.warn("API returned error status:", response.status);
+      return res.status(500).json({ reply: "Samarth's server down" });
+    }
 
     const data = await response.json();
     const reply =
