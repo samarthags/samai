@@ -1,32 +1,42 @@
-export default async function handler(req, res) {
-  const { message } = req.body;
+import { siteData } from "../data/siteData.js";
 
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ reply: "Method not allowed" });
+  }
+
+  const { message } = req.body || {};
   if (!message) {
     return res.status(400).json({ reply: "Invalid message" });
   }
 
   const API_KEY = process.env.GROQ_API_KEY;
+  if (!API_KEY) {
+    return res.status(500).json({ reply: "Missing API key" });
+  }
 
   try {
-    // 🔍 SEARCH YOUR WEBSITE
-    const webResult = await searchMyWebSam(message);
+    // 🔍 SEARCH SITE CONTENT
+    const result = siteData.find(d =>
+      message.toLowerCase().includes(d.name.toLowerCase())
+    );
 
-    let webContext = "";
-    if (webResult) {
-      webContext = `
-Data found on mywebsam.site:
-Name: ${webResult.name}
-Bio: ${webResult.bio}
-DOB: ${webResult.dob}
-Place: ${webResult.place}
-Profile: ${webResult.profileUrl}
+    let context = "";
+    if (result) {
+      context = `
+Website data found:
+Project: ${result.name}
+Description: ${result.description}
+Features: ${result.features.join(", ")}
+Creator: ${result.creator}
+Website: ${result.url}
 
-Use ONLY this information to answer.
+Answer only using this data.
 `;
     } else {
-      webContext = `
-No relevant result found on mywebsam.site.
-Say politely that no information is available.
+      context = `
+No matching information found on mywebsam.site.
+Say politely that no data is available.
 `;
     }
 
@@ -43,24 +53,22 @@ Say politely that no information is available.
           messages: [
             {
               role: "system",
-              content: `
-You are Expo AI.
-You act like a web-search assistant.
-Never guess.
-Only answer from provided website data.
-`,
+              content:
+                "You are Expo AI. Answer like a website search assistant. Never guess.",
             },
-            { role: "system", content: webContext },
+            { role: "system", content: context },
             { role: "user", content: message },
           ],
           temperature: 0.3,
-          max_tokens: 600,
+          max_tokens: 400,
         }),
       }
     );
 
     const data = await response.json();
-    const reply = data.choices[0].message.content;
+    const reply =
+      data?.choices?.[0]?.message?.content?.trim() ||
+      "No response generated";
 
     res.status(200).json({ reply });
 
