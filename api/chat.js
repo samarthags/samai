@@ -1,8 +1,6 @@
 // api/chat.js
 
-// -----------------------------
-// Helper: fetch user from Firebase REST API
-// -----------------------------
+// Optional: function to fetch user from REST API
 async function getMyWebSamUser(username) {
   if (!username) return null;
 
@@ -10,10 +8,8 @@ async function getMyWebSamUser(username) {
     const url = `https://firestore.googleapis.com/v1/projects/newai-52371/databases/(default)/documents/users/${username.toLowerCase()}`;
     const res = await fetch(url);
     if (!res.ok) return null;
-
     const data = await res.json();
 
-    // Firestore REST structure: fields.{field}.stringValue
     return {
       name: data.fields.name.stringValue,
       bio: data.fields.bio.stringValue,
@@ -27,9 +23,6 @@ async function getMyWebSamUser(username) {
   }
 }
 
-// -----------------------------
-// Main API handler
-// -----------------------------
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ reply: "Samarth's server down" });
@@ -40,22 +33,36 @@ export default async function handler(req, res) {
     return res.status(400).json({ reply: "Please send a valid message." });
   }
 
-  const API_KEY = process.env.GROQ_API_KEY; // Your Groq API key
+  const API_KEY = process.env.GROQ_API_KEY;
   if (!API_KEY) return res.status(500).json({ reply: "Samarth's server down" });
 
   try {
     // -----------------------------
-    // Check if question is about a MyWebSam user
+    // Optional: fetch MyWebSam user
     // -----------------------------
-    let userData = null;
+    let userSystemPrompt = "";
     const match = message.match(/who is (\w+)/i);
     if (match) {
       const username = match[1];
-      userData = await getMyWebSamUser(username);
+      const userData = await getMyWebSamUser(username);
+      if (userData) {
+        userSystemPrompt = `
+Local MyWebSam user profile:
+Name: ${userData.name}
+Bio: ${userData.bio}
+Date of Birth: ${userData.dob}
+Location: ${userData.location}
+Profile URL: ${userData.profileUrl}
+
+Answer only using this information if the question is about this user.
+`;
+      } else {
+        userSystemPrompt = "No matching user found in MyWebSam. Politely indicate no information is available.";
+      }
     }
 
     // -----------------------------
-    // System prompt (original)
+    // Original system prompt
     // -----------------------------
     const systemPrompt = `
 You are Expo AI, a friendly AI assistant that can answer any question naturally and helpfully.
@@ -70,27 +77,20 @@ Do not mention Groq, OpenAI, or any third-party platforms.
 `;
 
     // -----------------------------
-    // Add user profile info if exists
+    // Build messages (old style)
     // -----------------------------
-    let userSystemPrompt = "";
-    if (userData) {
-      userSystemPrompt = `
-Local MyWebSam user profile:
-Name: ${userData.name}
-Bio: ${userData.bio}
-Date of Birth: ${userData.dob}
-Location: ${userData.location}
-Profile URL: ${userData.profileUrl}
+    const messages = [
+      { role: "system", content: systemPrompt }
+    ];
 
-Answer only using this information if the question is about this user.
-`;
-    } else if (match) {
-      userSystemPrompt =
-        "No matching user found in MyWebSam. Politely indicate no information is available.";
+    if (userSystemPrompt) {
+      messages.push({ role: "system", content: userSystemPrompt });
     }
 
+    messages.push({ role: "user", content: message });
+
     // -----------------------------
-    // Call Groq AI
+    // Call Groq API
     // -----------------------------
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -100,11 +100,7 @@ Answer only using this information if the question is about this user.
       },
       body: JSON.stringify({
         model: "groq/compound-mini",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "system", content: userSystemPrompt },
-          { role: "user", content: message }
-        ],
+        messages,
         max_tokens: 4000,
         temperature: 0.7
       })
@@ -124,6 +120,7 @@ Answer only using this information if the question is about this user.
       "Samarth's server down";
 
     res.status(200).json({ reply });
+
   } catch (err) {
     console.error("Server error:", err);
     res.status(500).json({ reply: "Samarth's server down" });
