@@ -1,21 +1,51 @@
 // api/chat.js
 import fetch from "node-fetch";
 
-// Helper: fetch profile from Firestore using API key (no service account)
+// Fetch MyWebSam user by username using Firestore REST API
 async function getMyWebSamUser(username) {
   if (!username) return null;
+
   try {
     const lowerUsername = username.toLowerCase();
-    const url = `https://firestore.googleapis.com/v1/projects/newai-52371/databases/(default)/documents/profiles/${lowerUsername}`;
-    const res = await fetch(url);
+
+    const url = `https://firestore.googleapis.com/v1/projects/newai-52371/databases/(default)/documents:runQuery`;
+    const body = {
+      structuredQuery: {
+        from: [{ collectionId: "profiles" }],
+        where: {
+          fieldFilter: {
+            field: { fieldPath: "username" },
+            op: "EQUAL",
+            value: { stringValue: lowerUsername }
+          }
+        },
+        limit: 1
+      }
+    };
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+
     if (!res.ok) return null;
+
     const data = await res.json();
-    if (!data.fields) return null;
+    if (!data || data.length === 0 || !data[0].document?.fields) return null;
+
+    const fields = data[0].document.fields;
+
     return {
-      name: data.fields.name?.stringValue || "No Name",
-      bio: data.fields.bio?.stringValue || "No Bio",
-      dob: data.fields.birthday?.stringValue || "Unknown",
-      location: data.fields.location?.stringValue || "Unknown",
+      name: fields.name?.stringValue || "No Name",
+      bio: fields.bio?.stringValue || "No Bio",
+      dob: fields.birthday?.stringValue || "Unknown",
+      location: fields.location?.stringValue || "Unknown",
+      github: fields.github?.stringValue || "",
+      snapchat: fields.snapchat?.stringValue || "",
+      telegram: fields.telegram?.stringValue || "",
+      twitter: fields.twitter?.stringValue || "",
+      imageUrl: fields.imageUrl?.stringValue || "",
       profileUrl: `https://mywebsam.site/${lowerUsername}`
     };
   } catch (err) {
@@ -38,12 +68,13 @@ export default async function handler(req, res) {
   if (!API_KEY) return res.status(500).json({ reply: "Samarth's server down" });
 
   try {
-    // Check for "Who is X" questions
+    // Detect if the question is about a user
     let userSystemPrompt = "";
-    const match = message.match(/who is (\w+)/i);
+    const match = message.match(/who is ([\w\s]+)/i); // captures multi-word usernames
     if (match) {
-      const username = match[1];
+      const username = match[1].trim();
       const userData = await getMyWebSamUser(username);
+
       if (userData) {
         userSystemPrompt = `
 You are answering about a MyWebSam user. Use ONLY this info:
@@ -51,13 +82,19 @@ Name: ${userData.name}
 Bio: ${userData.bio}
 DOB: ${userData.dob}
 Location: ${userData.location}
+Github: ${userData.github}
+Snapchat: ${userData.snapchat}
+Telegram: ${userData.telegram}
+Twitter: ${userData.twitter}
 Profile URL: ${userData.profileUrl}
+Provide a concise and friendly answer using this info.
 `;
       } else {
         userSystemPrompt = "No user found in MyWebSam. Politely indicate that.";
       }
     }
 
+    // Old AI system prompt for everything else
     const systemPrompt = `
 You are Expo AI, a friendly AI assistant.
 If asked about Samartha GS, provide a short factual answer:
@@ -65,19 +102,14 @@ If asked about Samartha GS, provide a short factual answer:
 - 18 years old.
 - Developed Expo AI.
 - Contact: samarthags.in
-Keep answers concise and natural.
+Keep answers concise, natural, and helpful.
 `;
 
-    const messages = [
-      { role: "system", content: systemPrompt }
-    ];
-
-    if (userSystemPrompt) {
-      messages.push({ role: "system", content: userSystemPrompt });
-    }
-
+    const messages = [{ role: "system", content: systemPrompt }];
+    if (userSystemPrompt) messages.push({ role: "system", content: userSystemPrompt });
     messages.push({ role: "user", content: message });
 
+    // Call Groq API
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -92,15 +124,13 @@ Keep answers concise and natural.
       })
     });
 
-    if (!response.ok) {
-      console.warn("API returned error status:", response.status);
-      return res.status(500).json({ reply: "Samarth's server down" });
-    }
+    if (!response.ok) return res.status(500).json({ reply: "Samarth's server down" });
 
     const data = await response.json();
-    const reply = data?.choices?.[0]?.message?.content?.trim() ||
-                  data?.choices?.[0]?.text?.trim() ||
-                  "Samarth's server down";
+    const reply =
+      data?.choices?.[0]?.message?.content?.trim() ||
+      data?.choices?.[0]?.text?.trim() ||
+      "Samarth's server down";
 
     res.status(200).json({ reply });
 
