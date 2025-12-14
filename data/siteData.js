@@ -14,6 +14,6 @@ export const siteData = [
       "Like and share buttons",
       "Ideas and projects sharing"
     ],
-    createUrl: "https://mywebsam.site/create"
+    createUrl: "https://mywebsam.site/"
   }
 ];
