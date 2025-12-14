@@ -1,48 +1,88 @@
 // api/chat.js
-
-import { siteData } from "../data/siteData.js";
+import { getMyWebSamUser } from "../../lib/getUser";
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
+  if (req.method !== "POST")
     return res.status(405).json({ reply: "Method not allowed" });
-  }
 
   const { message } = req.body || {};
-  if (!message || typeof message !== "string") {
-    return res.status(400).json({ reply: "Invalid message" });
-  }
+  if (!message) return res.status(400).json({ reply: "Invalid message" });
+
+  const API_KEY = "YOUR_GROQ_API_KEY_HERE"; // replace with your Groq API key
 
   try {
-    // 🔍 STEP 2: SEARCH WEBSITE DATA
-    const query = message.toLowerCase();
+    let userData = null;
 
-    const result = siteData.find(item =>
-      query.includes(item.name.toLowerCase()) ||
-      query.includes(item.creator.toLowerCase())
-    );
+    // Check if question is about a MyWebSam user
+    const match = message.match(/who is (\w+)/i);
+    if (match) {
+      const username = match[1];
+      userData = await getMyWebSamUser(username);
+    }
 
-    // ❌ If nothing found
-    if (!result) {
-      return res.status(200).json({
-        reply: "I couldn’t find any information about that on MyWebSam."
+    // Build AI messages array
+    const messages = [
+      {
+        role: "system",
+        content: `
+You are Expo AI, an AI assistant for MyWebSam.
+Answer naturally and clearly like ChatGPT.
+Do not invent facts.
+`
+      }
+    ];
+
+    if (userData) {
+      messages.push({
+        role: "system",
+        content: `
+Local MyWebSam user profile:
+Name: ${userData.name}
+Bio: ${userData.bio}
+Date of Birth: ${userData.dob}
+Location: ${userData.location}
+Profile URL: ${userData.profileUrl}
+
+Answer only using this information if the question is about this user.
+`
+      });
+    } else if (match) {
+      messages.push({
+        role: "system",
+        content:
+          "No matching user found in MyWebSam. Politely indicate no information is available."
       });
     }
 
-    // ✅ Found result → answer like AI
-    const reply = `
-${result.name} is a project created by ${result.creator}.
-${result.description}
+    // Add user question
+    messages.push({ role: "user", content: message });
 
-Key features include:
-- ${result.features.join("\n- ")}
+    // Call Groq AI
+    const response = await fetch(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "groq/compound-mini",
+          messages,
+          temperature: 0.6,
+          max_tokens: 500
+        })
+      }
+    );
 
-You can create your profile here: ${result.createUrl}
-`.trim();
+    const data = await response.json();
+    const reply =
+      data?.choices?.[0]?.message?.content?.trim() || "No response generated";
 
-    return res.status(200).json({ reply });
+    res.status(200).json({ reply });
 
   } catch (err) {
-    console.error("ERROR:", err);
-    return res.status(500).json({ reply: "Server error" });
+    console.error(err);
+    res.status(500).json({ reply: "Internal server error" });
   }
 }
