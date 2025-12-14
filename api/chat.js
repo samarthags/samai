@@ -1,68 +1,71 @@
-// api/chat.js
-
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ reply: "Samarth's server down" });
-  }
+  const { message } = req.body;
 
-  const { message } = req.body || {};
-  if (!message || typeof message !== "string" || message.trim() === "") {
-    return res.status(400).json({ reply: "Please send a valid message." });
+  if (!message) {
+    return res.status(400).json({ reply: "Invalid message" });
   }
 
   const API_KEY = process.env.GROQ_API_KEY;
-  if (!API_KEY) {
-    return res.status(500).json({ reply: "Samarth's server down" });
-  }
 
   try {
-    const systemPrompt = `
-You are Expo AI, a friendly AI assistant that can answer any question naturally and helpfully.
-If asked about Samartha GS, provide a short factual answer:
-- He is a student from Sagara, passionate about AI and web development.
-- He is 18 years old.
-- He developed Expo AI.
-- Contact: samarthags.in
-Keep answers concise (1–2 sentences) and varied.
-For all other questions, answer fully, clearly, and naturally.
-Do not mention Groq, OpenAI, or any third-party platforms.
+    // 🔍 SEARCH YOUR WEBSITE
+    const webResult = await searchMyWebSam(message);
+
+    let webContext = "";
+    if (webResult) {
+      webContext = `
+Data found on mywebsam.site:
+Name: ${webResult.name}
+Bio: ${webResult.bio}
+DOB: ${webResult.dob}
+Place: ${webResult.place}
+Profile: ${webResult.profileUrl}
+
+Use ONLY this information to answer.
 `;
-
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "groq/compound-mini",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: message }
-        ],
-        max_tokens: 4000,
-        temperature: 0.7
-      })
-    });
-
-    if (!response.ok) {
-      console.warn("API returned error status:", response.status);
-      return res.status(500).json({ reply: "Samarth's server down" });
+    } else {
+      webContext = `
+No relevant result found on mywebsam.site.
+Say politely that no information is available.
+`;
     }
 
+    const response = await fetch(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "groq/compound-mini",
+          messages: [
+            {
+              role: "system",
+              content: `
+You are Expo AI.
+You act like a web-search assistant.
+Never guess.
+Only answer from provided website data.
+`,
+            },
+            { role: "system", content: webContext },
+            { role: "user", content: message },
+          ],
+          temperature: 0.3,
+          max_tokens: 600,
+        }),
+      }
+    );
+
     const data = await response.json();
-
-    console.log("Expo AI API response:", JSON.stringify(data, null, 2));
-
-    const reply =
-      data?.choices?.[0]?.message?.content?.trim() ||
-      data?.choices?.[0]?.text?.trim() ||
-      "Samarth's server down";
+    const reply = data.choices[0].message.content;
 
     res.status(200).json({ reply });
 
   } catch (err) {
-    console.error("Server error:", err);
-    res.status(500).json({ reply: "Samarth's server down" });
+    console.error(err);
+    res.status(500).json({ reply: "Server error" });
   }
 }
