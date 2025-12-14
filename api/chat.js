@@ -1,24 +1,29 @@
 // api/chat.js
 
-// Optional: function to fetch user from REST API
+import fetch from "node-fetch";
+
+// Firebase REST function
 async function getMyWebSamUser(username) {
   if (!username) return null;
 
   try {
-    const url = `https://firestore.googleapis.com/v1/projects/newai-52371/databases/(default)/documents/users/${username.toLowerCase()}`;
+    const lowerUsername = username.toLowerCase();
+    const url = `https://firestore.googleapis.com/v1/projects/newai-52371/databases/(default)/documents/profiles/${lowerUsername}`;
     const res = await fetch(url);
     if (!res.ok) return null;
     const data = await res.json();
 
+    if (!data.fields) return null;
+
     return {
-      name: data.fields.name.stringValue,
-      bio: data.fields.bio.stringValue,
-      dob: data.fields.dob.stringValue,
-      location: data.fields.location.stringValue,
-      profileUrl: `https://mywebsam.site/${username}`
+      name: data.fields.name?.stringValue || "No Name",
+      bio: data.fields.bio?.stringValue || "No Bio",
+      dob: data.fields.birthday?.stringValue || "Unknown",
+      location: data.fields.location?.stringValue || "Unknown",
+      profileUrl: `https://mywebsam.site/${lowerUsername}`
     };
   } catch (err) {
-    console.error("Firestore REST error:", err);
+    console.error("Firebase REST error:", err);
     return null;
   }
 }
@@ -37,9 +42,7 @@ export default async function handler(req, res) {
   if (!API_KEY) return res.status(500).json({ reply: "Samarth's server down" });
 
   try {
-    // -----------------------------
-    // Optional: fetch MyWebSam user
-    // -----------------------------
+    // Check if message is asking about a user
     let userSystemPrompt = "";
     const match = message.match(/who is (\w+)/i);
     if (match) {
@@ -61,9 +64,7 @@ Answer only using this information if the question is about this user.
       }
     }
 
-    // -----------------------------
     // Original system prompt
-    // -----------------------------
     const systemPrompt = `
 You are Expo AI, a friendly AI assistant that can answer any question naturally and helpfully.
 If asked about Samartha GS, provide a short factual answer:
@@ -76,9 +77,7 @@ For all other questions, answer fully, clearly, and naturally.
 Do not mention Groq, OpenAI, or any third-party platforms.
 `;
 
-    // -----------------------------
-    // Build messages (old style)
-    // -----------------------------
+    // Build messages
     const messages = [
       { role: "system", content: systemPrompt }
     ];
@@ -89,9 +88,7 @@ Do not mention Groq, OpenAI, or any third-party platforms.
 
     messages.push({ role: "user", content: message });
 
-    // -----------------------------
     // Call Groq API
-    // -----------------------------
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -112,7 +109,6 @@ Do not mention Groq, OpenAI, or any third-party platforms.
     }
 
     const data = await response.json();
-    console.log("Expo AI API response:", JSON.stringify(data, null, 2));
 
     const reply =
       data?.choices?.[0]?.message?.content?.trim() ||
