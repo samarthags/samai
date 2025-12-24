@@ -1,43 +1,24 @@
-import fs from "fs";
-import fetch from "node-fetch";
-
 const chatMemory = new Map();
-const KNOWLEDGE_FILE = "./knowledge.json";
 
-// Ensure knowledge.json exists
-if (!fs.existsSync(KNOWLEDGE_FILE)) {
-  fs.writeFileSync(KNOWLEDGE_FILE, JSON.stringify([]));
-}
-
-// Load knowledge base
-function loadKnowledge() {
-  try {
-    return JSON.parse(fs.readFileSync(KNOWLEDGE_FILE, "utf-8"));
-  } catch (err) {
-    console.error("Error reading knowledge.json:", err);
-    return [];
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ reply: "Method not allowed" });
   }
-}
 
-// Save a new entry to knowledge base
-function saveKnowledge(user, text) {
-  const knowledge = loadKnowledge();
-  knowledge.push({ user, text });
-  fs.writeFileSync(KNOWLEDGE_FILE, JSON.stringify(knowledge, null, 2));
-}
+  try {
+    const { message, chatId } = req.body;
 
-// Build system prompt with knowledge + instructions
-function buildSystemPrompt() {
-  const knowledge = loadKnowledge();
-  const knowledgeText = knowledge.map(k => `${k.user}: ${k.text}`).join("\n");
-  return {
-    role: "system",
-    content: `
+    if (!message || !chatId) {
+      return res.status(400).json({ reply: "Invalid request" });
+    }
+
+    // Get previous conversation
+    const history = chatMemory.get(chatId) || [];
+
+    const systemPrompt = {
+      role: "system",
+      content: `
 You are Expo AI, a friendly and intelligent assistant.
-Use the following knowledge to answer questions accurately:
-
-${knowledgeText}
-
 Always keep answers connected to previous questions.
 If a user asks a follow-up question, infer the context automatically.
 
@@ -49,31 +30,15 @@ If asked about Samartha GS:
 - Website: samarthags.in
 
 Do not mention any AI providers or platforms.
-      `
-  };
-}
+`
+    };
 
-// Main handler function to get AI reply
-export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ reply: "Method not allowed" });
-  }
-
-  try {
-    const { message, chatId } = req.body;
-    if (!message || !chatId) return res.status(400).json({ reply: "Invalid request" });
-
-    // Load conversation history for this chat
-    const history = chatMemory.get(chatId) || [];
-
-    // Build messages array for AI
     const messages = [
-      buildSystemPrompt(),
+      systemPrompt,
       ...history,
       { role: "user", content: message }
     ];
 
-    // Call Groq AI
     const response = await fetch(
       "https://api.groq.com/openai/v1/chat/completions",
       {
@@ -92,29 +57,31 @@ export default async function handler(req, res) {
     );
 
     if (!response.ok) {
-      console.error("Groq API error:", response.status, await response.text());
-      return res.status(500).json({ reply: "SamServer is busy 🫠" });
+      return res.status(500).json({
+        reply: "SamServer is busy 🫠"
+      });
     }
 
     const data = await response.json();
-    const reply = data?.choices?.[0]?.message?.content?.trim() || "SamServer didn’t respond 🫠";
+    const reply =
+      data?.choices?.[0]?.message?.content?.trim() ||
+      "SamServer didn’t respond 🫠";
 
-    // Update chat memory (last 6 messages)
+    // Save last 6 messages only (memory control)
     const updatedHistory = [
       ...history,
       { role: "user", content: message },
       { role: "assistant", content: reply }
     ].slice(-6);
-    chatMemory.set(chatId, updatedHistory);
 
-    // Save message & reply to persistent knowledge
-    saveKnowledge("user", message);
-    saveKnowledge("Expo", reply);
+    chatMemory.set(chatId, updatedHistory);
 
     return res.status(200).json({ reply });
 
   } catch (err) {
     console.error("AI API Error:", err);
-    return res.status(500).json({ reply: "Server error 🫠" });
+    return res.status(500).json({
+      reply: "Server error 🫠"
+    });
   }
 }
