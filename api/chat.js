@@ -1,87 +1,73 @@
-const chatMemory = new Map();
+import fs from "fs";
+import fetch from "node-fetch";
 
-export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ reply: "Method not allowed" });
-  }
+const KNOWLEDGE_FILE = "./knowledge.json";
 
+// Ensure knowledge file exists
+if (!fs.existsSync(KNOWLEDGE_FILE)) {
+  fs.writeFileSync(KNOWLEDGE_FILE, JSON.stringify([]));
+}
+
+// Load knowledge
+function loadKnowledge() {
+  const data = fs.readFileSync(KNOWLEDGE_FILE, "utf-8");
+  return JSON.parse(data);
+}
+
+// Save knowledge
+function saveKnowledge(knowledge) {
+  fs.writeFileSync(KNOWLEDGE_FILE, JSON.stringify(knowledge, null, 2));
+}
+
+// Add a new fact to knowledge
+export function addKnowledge(user, text) {
+  const knowledge = loadKnowledge();
+  knowledge.push({ user, text });
+  saveKnowledge(knowledge);
+}
+
+// Build system prompt including all knowledge
+function buildSystemPrompt() {
+  const knowledge = loadKnowledge();
+  const knowledgeText = knowledge.map(k => `${k.user}: ${k.text}`).join("\n");
+  return `
+You are Expo AI, a friendly AI assistant. 
+Use the following knowledge to answer questions accurately and in context:
+
+${knowledgeText}
+
+Always answer concisely by default. Provide more detail only if explicitly asked.
+`;
+}
+
+// Main function to get AI reply
+export async function getReply(userMessage) {
   try {
-    const { message, chatId } = req.body;
+    const systemPrompt = buildSystemPrompt();
 
-    if (!message || !chatId) {
-      return res.status(400).json({ reply: "Invalid request" });
-    }
-
-    // Get previous conversation
-    const history = chatMemory.get(chatId) || [];
-
-    const systemPrompt = {
-      role: "system",
-      content: `
-You are Expo AI, a friendly and intelligent assistant.
-Always keep answers connected to previous questions.
-If a user asks a follow-up question, infer the context automatically.
-
-If asked about Samartha GS:
-- Student from Sagara
-- Passionate about AI & web development
-- 18 years old
-- Creator of Expo AI
-- Website: samarthags.in
-
-Do not mention any AI providers or platforms.
-`
-    };
-
-    const messages = [
-      systemPrompt,
-      ...history,
-      { role: "user", content: message }
-    ];
-
-    const response = await fetch(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: "llama-3.1-8b-instant",
-          messages,
-          temperature: 0.7,
-          max_tokens: 512
-        })
-      }
-    );
-
-    if (!response.ok) {
-      return res.status(500).json({
-        reply: "SamServer is busy 🫠"
-      });
-    }
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-8b-instant",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessage }
+        ],
+        max_tokens: 512,
+        temperature: 0.7
+      })
+    });
 
     const data = await response.json();
-    const reply =
-      data?.choices?.[0]?.message?.content?.trim() ||
-      "SamServer didn’t respond 🫠";
+    const reply = data?.choices?.[0]?.message?.content?.trim() || "Sorry, I couldn't process that.";
 
-    // Save last 6 messages only (memory control)
-    const updatedHistory = [
-      ...history,
-      { role: "user", content: message },
-      { role: "assistant", content: reply }
-    ].slice(-6);
-
-    chatMemory.set(chatId, updatedHistory);
-
-    return res.status(200).json({ reply });
-
+    return reply;
   } catch (err) {
-    console.error("AI API Error:", err);
-    return res.status(500).json({
-      reply: "Server error 🫠"
-    });
+    console.error("Error fetching AI reply:", err);
+    return "Samarth's server is down.";
   }
 }
