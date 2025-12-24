@@ -4,53 +4,43 @@ import fetch from "node-fetch";
 const chatMemory = new Map();
 const KNOWLEDGE_FILE = "./knowledge.json";
 
-// Ensure knowledge file exists
+// Ensure knowledge.json exists
 if (!fs.existsSync(KNOWLEDGE_FILE)) {
   fs.writeFileSync(KNOWLEDGE_FILE, JSON.stringify([]));
 }
 
-// Load knowledge
+// Load knowledge base
 function loadKnowledge() {
   try {
     return JSON.parse(fs.readFileSync(KNOWLEDGE_FILE, "utf-8"));
-  } catch {
+  } catch (err) {
+    console.error("Error reading knowledge.json:", err);
     return [];
   }
 }
 
-// Save knowledge
+// Save a new entry to knowledge base
 function saveKnowledge(user, text) {
   const knowledge = loadKnowledge();
   knowledge.push({ user, text });
   fs.writeFileSync(KNOWLEDGE_FILE, JSON.stringify(knowledge, null, 2));
 }
 
-export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ reply: "Method not allowed" });
-  }
-
-  try {
-    const { message, chatId } = req.body;
-    if (!message || !chatId) return res.status(400).json({ reply: "Invalid request" });
-
-    // Load conversation history
-    const history = chatMemory.get(chatId) || [];
-
-    // Load knowledge base
-    const knowledge = loadKnowledge();
-    const knowledgeText = knowledge.map(k => `${k.user}: ${k.text}`).join("\n");
-
-    const systemPrompt = {
-      role: "system",
-      content: `
+// Build system prompt with knowledge + instructions
+function buildSystemPrompt() {
+  const knowledge = loadKnowledge();
+  const knowledgeText = knowledge.map(k => `${k.user}: ${k.text}`).join("\n");
+  return {
+    role: "system",
+    content: `
 You are Expo AI, a friendly and intelligent assistant.
-Always keep answers connected to previous questions.
-Use the following knowledge to answer accurately:
+Use the following knowledge to answer questions accurately:
 
 ${knowledgeText}
 
-If a user asks a follow-up question, infer context automatically.
+Always keep answers connected to previous questions.
+If a user asks a follow-up question, infer the context automatically.
+
 If asked about Samartha GS:
 - Student from Sagara
 - Passionate about AI & web development
@@ -60,14 +50,30 @@ If asked about Samartha GS:
 
 Do not mention any AI providers or platforms.
       `
-    };
+  };
+}
 
+// Main handler function to get AI reply
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ reply: "Method not allowed" });
+  }
+
+  try {
+    const { message, chatId } = req.body;
+    if (!message || !chatId) return res.status(400).json({ reply: "Invalid request" });
+
+    // Load conversation history for this chat
+    const history = chatMemory.get(chatId) || [];
+
+    // Build messages array for AI
     const messages = [
-      systemPrompt,
+      buildSystemPrompt(),
       ...history,
       { role: "user", content: message }
     ];
 
+    // Call Groq AI
     const response = await fetch(
       "https://api.groq.com/openai/v1/chat/completions",
       {
@@ -86,6 +92,7 @@ Do not mention any AI providers or platforms.
     );
 
     if (!response.ok) {
+      console.error("Groq API error:", response.status, await response.text());
       return res.status(500).json({ reply: "SamServer is busy 🫠" });
     }
 
@@ -100,7 +107,7 @@ Do not mention any AI providers or platforms.
     ].slice(-6);
     chatMemory.set(chatId, updatedHistory);
 
-    // Save AI reply and user message to knowledge base
+    // Save message & reply to persistent knowledge
     saveKnowledge("user", message);
     saveKnowledge("Expo", reply);
 
