@@ -10,8 +10,13 @@ if (!fs.existsSync(KNOWLEDGE_FILE)) {
 
 // Load knowledge
 function loadKnowledge() {
-  const data = fs.readFileSync(KNOWLEDGE_FILE, "utf-8");
-  return JSON.parse(data);
+  try {
+    const data = fs.readFileSync(KNOWLEDGE_FILE, "utf-8");
+    return JSON.parse(data);
+  } catch (err) {
+    console.error("Error loading knowledge.json:", err);
+    return [];
+  }
 }
 
 // Save knowledge
@@ -31,12 +36,12 @@ function buildSystemPrompt() {
   const knowledge = loadKnowledge();
   const knowledgeText = knowledge.map(k => `${k.user}: ${k.text}`).join("\n");
   return `
-You are Expo AI, a friendly AI assistant. 
+You are Expo AI, a friendly and concise AI assistant. 
 Use the following knowledge to answer questions accurately and in context:
 
 ${knowledgeText}
 
-Always answer concisely by default. Provide more detail only if explicitly asked.
+Always answer concisely by default. Provide more details only if explicitly asked.
 `;
 }
 
@@ -61,6 +66,11 @@ export async function getReply(userMessage) {
         temperature: 0.7
       })
     });
+
+    if (!response.ok) {
+      console.error("Groq API error:", response.status, await response.text());
+      return "Samarth's server is down.";
+    }
 
     const data = await response.json();
     const reply = data?.choices?.[0]?.message?.content?.trim() || "Sorry, I couldn't process that.";
