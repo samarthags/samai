@@ -8,6 +8,7 @@ export default async function handler(req, res) {
 
   try {
     const { message, chatId } = req.body;
+
     if (!message || !chatId) {
       return res.status(400).json({ reply: "Invalid request" });
     }
@@ -15,6 +16,7 @@ export default async function handler(req, res) {
     const text = message.trim();
     const lower = text.toLowerCase();
 
+    // 🔹 Firestore reference
     const userRef = db.collection("users").doc(chatId);
     const snap = await userRef.get();
 
@@ -29,29 +31,39 @@ export default async function handler(req, res) {
     // 🧠 TRAINING MODE
     if (lower.startsWith("remember ")) {
       const fact = text.replace(/^remember\s+/i, "");
-      knowledge.push(fact);
 
-      await userRef.set(
-        { knowledge, updatedAt: Date.now() },
-        { merge: true }
-      );
+      if (fact.length > 0) {
+        knowledge.push(fact);
 
-      return res.json({ reply: "Saved 👍 I’ll remember this." });
+        await userRef.set(
+          {
+            knowledge,
+            updatedAt: Date.now()
+          },
+          { merge: true }
+        );
+
+        return res.status(200).json({
+          reply: "Saved 👍 I’ll remember that."
+        });
+      }
     }
 
+    // 🔹 SYSTEM PROMPT
     const systemPrompt = {
       role: "system",
       content: `
 You are Expo AI.
 
 Rules:
-- Short answers by default
-- One line for facts
-- Use memory when relevant
-- Follow context
-- No unnecessary personal info
+- Answer briefly by default
+- One line for factual questions
+- Explain only if asked
+- Follow conversation context
+- Use known facts naturally
+- Do NOT add unnecessary personal info
 
-Known facts:
+Known facts about the user:
 ${knowledge.map(k => "- " + k).join("\n")}
 `
     };
@@ -62,7 +74,8 @@ ${knowledge.map(k => "- " + k).join("\n")}
       { role: "user", content: text }
     ];
 
-    const ai = await fetch(
+    // 🔹 GROQ API CALL
+    const aiRes = await fetch(
       "https://api.groq.com/openai/v1/chat/completions",
       {
         method: "POST",
@@ -79,11 +92,18 @@ ${knowledge.map(k => "- " + k).join("\n")}
       }
     );
 
-    const data = await ai.json();
+    if (!aiRes.ok) {
+      return res.status(500).json({
+        reply: "AI busy 🫠"
+      });
+    }
+
+    const data = await aiRes.json();
     const reply =
       data?.choices?.[0]?.message?.content?.trim() ||
       "I didn’t understand.";
 
+    // 🔹 SAVE LAST 6 MESSAGES ONLY
     const updatedHistory = [
       ...history,
       { role: "user", content: text },
@@ -99,10 +119,12 @@ ${knowledge.map(k => "- " + k).join("\n")}
       { merge: true }
     );
 
-    res.json({ reply });
+    return res.status(200).json({ reply });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ reply: "Server error 🫠" });
+    console.error("Chat API error:", err);
+    return res.status(500).json({
+      reply: "Server error 🫠"
+    });
   }
 }
