@@ -1,7 +1,8 @@
 import fetch from "node-fetch";
+import { loadKnowledge, saveKnowledge } from "./knowledge.js";
 
-// 🧠 In-memory knowledge store
-const knowledgeBase = [];
+// 🧠 Load persistent knowledge
+let knowledgeBase = loadKnowledge();
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -27,6 +28,7 @@ export default async function handler(req, res) {
       }
 
       knowledgeBase.push(fact);
+      saveKnowledge(knowledgeBase);
 
       return res.status(200).json({
         reply: "Saved 👍 I’ll remember that."
@@ -40,15 +42,13 @@ export default async function handler(req, res) {
 You are Expo AI.
 
 Rules:
-- Use local knowledge ONLY if provided
+- Use local knowledge only if available
+- Do NOT hallucinate
 - Answer briefly by default
-- One line for factual questions
-- Explain only if asked
-- Do NOT hallucinate unknown facts
-- If info is missing, say "No local info available"
+- Say "No local info available" if unknown
 
 Local Knowledge:
-${knowledgeBase.length > 0
+${knowledgeBase.length
   ? knowledgeBase.map(k => "- " + k).join("\n")
   : "None"}
 `
@@ -78,9 +78,7 @@ ${knowledgeBase.length > 0
     );
 
     if (!aiRes.ok) {
-      return res.status(500).json({
-        reply: "AI busy 🫠"
-      });
+      return res.status(500).json({ reply: "AI busy 🫠" });
     }
 
     const data = await aiRes.json();
@@ -91,9 +89,7 @@ ${knowledgeBase.length > 0
     return res.status(200).json({ reply });
 
   } catch (err) {
-    console.error("Chat API error:", err);
-    return res.status(500).json({
-      reply: "Server error 🫠"
-    });
+    console.error("Chat error:", err);
+    return res.status(500).json({ reply: "Server error 🫠" });
   }
 }
