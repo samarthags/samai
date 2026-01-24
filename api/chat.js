@@ -1,8 +1,7 @@
 import fetch from "node-fetch";
-import { loadKnowledge, saveKnowledge } from "./knowledge.js";
 
-// 🧠 Load persistent knowledge
-let knowledgeBase = loadKnowledge();
+// 🧠 In-memory shared knowledge (server-wide)
+const knowledgeBase = [];
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -28,7 +27,6 @@ export default async function handler(req, res) {
       }
 
       knowledgeBase.push(fact);
-      saveKnowledge(knowledgeBase);
 
       return res.status(200).json({
         reply: "Saved 👍 I’ll remember that."
@@ -44,8 +42,8 @@ You are Expo AI.
 Rules:
 - Use local knowledge only if available
 - Do NOT hallucinate
-- Answer briefly by default
-- Say "No local info available" if unknown
+- Answer briefly
+- If info not found, say "No local info available"
 
 Local Knowledge:
 ${knowledgeBase.length
@@ -89,7 +87,7 @@ ${knowledgeBase.length
     return res.status(200).json({ reply });
 
   } catch (err) {
-    console.error("Chat error:", err);
+    console.error("Chat API error:", err);
     return res.status(500).json({ reply: "Server error 🫠" });
   }
 }
