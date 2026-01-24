@@ -1,5 +1,7 @@
 import fetch from "node-fetch";
-import { db } from "../lib/firebase.js";
+
+// 🧠 In-memory knowledge store
+const knowledgeBase = [];
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -7,46 +9,28 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { message, chatId } = req.body;
+    const { message } = req.body;
 
-    if (!message || !chatId) {
+    if (!message || typeof message !== "string") {
       return res.status(400).json({ reply: "Invalid request" });
     }
 
     const text = message.trim();
     const lower = text.toLowerCase();
 
-    // 🔹 Firestore reference
-    const userRef = db.collection("users").doc(chatId);
-    const snap = await userRef.get();
-
-    let history = [];
-    let knowledge = [];
-
-    if (snap.exists) {
-      history = snap.data().history || [];
-      knowledge = snap.data().knowledge || [];
-    }
-
     // 🧠 TRAINING MODE
     if (lower.startsWith("remember ")) {
-      const fact = text.replace(/^remember\s+/i, "");
+      const fact = text.replace(/^remember\s+/i, "").trim();
 
-      if (fact.length > 0) {
-        knowledge.push(fact);
-
-        await userRef.set(
-          {
-            knowledge,
-            updatedAt: Date.now()
-          },
-          { merge: true }
-        );
-
-        return res.status(200).json({
-          reply: "Saved 👍 I’ll remember that."
-        });
+      if (!fact) {
+        return res.status(400).json({ reply: "Nothing to remember 🤔" });
       }
+
+      knowledgeBase.push(fact);
+
+      return res.status(200).json({
+        reply: "Saved 👍 I’ll remember that."
+      });
     }
 
     // 🔹 SYSTEM PROMPT
@@ -56,21 +40,22 @@ export default async function handler(req, res) {
 You are Expo AI.
 
 Rules:
+- Use local knowledge ONLY if provided
 - Answer briefly by default
 - One line for factual questions
 - Explain only if asked
-- Follow conversation context
-- Use known facts naturally
-- Do NOT add unnecessary personal info
+- Do NOT hallucinate unknown facts
+- If info is missing, say "No local info available"
 
-Known facts about the user:
-${knowledge.map(k => "- " + k).join("\n")}
+Local Knowledge:
+${knowledgeBase.length > 0
+  ? knowledgeBase.map(k => "- " + k).join("\n")
+  : "None"}
 `
     };
 
     const messages = [
       systemPrompt,
-      ...history,
       { role: "user", content: text }
     ];
 
@@ -86,8 +71,8 @@ ${knowledge.map(k => "- " + k).join("\n")}
         body: JSON.stringify({
           model: "llama-3.1-8b-instant",
           messages,
-          temperature: 0.4,
-          max_tokens: 300
+          temperature: 0.3,
+          max_tokens: 250
         })
       }
     );
@@ -102,22 +87,6 @@ ${knowledge.map(k => "- " + k).join("\n")}
     const reply =
       data?.choices?.[0]?.message?.content?.trim() ||
       "I didn’t understand.";
-
-    // 🔹 SAVE LAST 6 MESSAGES ONLY
-    const updatedHistory = [
-      ...history,
-      { role: "user", content: text },
-      { role: "assistant", content: reply }
-    ].slice(-6);
-
-    await userRef.set(
-      {
-        history: updatedHistory,
-        knowledge,
-        updatedAt: Date.now()
-      },
-      { merge: true }
-    );
 
     return res.status(200).json({ reply });
 
