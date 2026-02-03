@@ -11,5 +11,7 @@
       "src": "/(.*)",
       "dest": "/api/bot"
     }
-  ]
+  ],
+  "buildCommand": "npm install",
+  "outputDirectory": "."
 }
