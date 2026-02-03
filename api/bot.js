@@ -2,7 +2,7 @@ import { Telegraf } from 'telegraf';
 import fetch from 'node-fetch';
 
 // Telegram Bot Token (HARDCODED - REPLACE WITH YOUR TOKEN)
-const BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN_HERE";
+const BOT_TOKEN = "8559167003:AAGg0sWPEoFyLWKg9BBfcLzJCoNA1hi1Sus";
 
 // Initialize bot
 const bot = new Telegraf(BOT_TOKEN);
