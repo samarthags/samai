@@ -1,5 +1,4 @@
 import { Telegraf } from 'telegraf';
-import fetch from 'node-fetch';
 
 // Your Telegram Bot Token
 const BOT_TOKEN = "8559167003:AAGg0sWPEoFyLWKg9BBfcLzJCoNA1hi1Sus";
