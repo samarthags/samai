@@ -5,10 +5,11 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const bot = new Telegraf(BOT_TOKEN);
 
 // ==================== STORAGE ====================
-const userSessions = new Map(); // userId -> {messages: [], quiz: {}, reminders: []}
-const activeQuizzes = new Map(); // userId -> quiz session
-const allReminders = new Map(); // userId -> reminders array
-const quizStats = new Map(); // userId -> statistics
+const userSessions = new Map();
+const activeQuizzes = new Map();
+const allReminders = new Map();
+const quizStats = new Map();
+const sharedQuizzes = new Map(); // NEW: Store shared quizzes
 
 // ==================== HELPER FUNCTIONS ====================
 function getUserData(userId) {
@@ -22,251 +23,59 @@ function getUserData(userId) {
         totalCorrect: 0,
         totalQuestions: 0,
         currentStreak: 0,
-        bestStreak: 0
+        bestStreak: 0,
+        quizzesCreated: 0,
+        quizzesShared: 0
       }
     });
   }
   return userSessions.get(userId);
 }
 
-// ==================== WEB SEARCH SYSTEM ====================
-async function webSearch(query, maxResults = 5) {
-  try {
-    console.log(`🔍 Web searching: "${query}"`);
-    
-    // Try DuckDuckGo first (free, no API key needed)
-    const ddgResponse = await fetch(
-      `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`
-    );
-    
-    if (ddgResponse.ok) {
-      const ddgData = await ddgResponse.json();
-      
-      // Check for instant answer
-      if (ddgData.AbstractText) {
-        return {
-          success: true,
-          source: 'DuckDuckGo',
-          type: 'instant_answer',
-          query: query,
-          data: {
-            summary: ddgData.AbstractText,
-            source: ddgData.AbstractSource || 'Web',
-            url: ddgData.AbstractURL,
-            image: ddgData.Image ? `https://duckduckgo.com${ddgData.Image}` : null,
-            related: ddgData.RelatedTopics ? 
-              ddgData.RelatedTopics.slice(0, 3).map(topic => ({
-                text: topic.Text,
-                url: topic.FirstURL
-              })) : []
-          }
-        };
-      }
-      
-      // Check related topics
-      if (ddgData.RelatedTopics && ddgData.RelatedTopics.length > 0) {
-        const results = ddgData.RelatedTopics
-          .filter(topic => topic.FirstURL && topic.Text)
-          .slice(0, maxResults)
-          .map(topic => ({
-            title: topic.Text.split(' - ')[0] || topic.Text,
-            snippet: topic.Text,
-            url: topic.FirstURL,
-            source: 'DuckDuckGo'
-          }));
-        
-        if (results.length > 0) {
-          return {
-            success: true,
-            source: 'DuckDuckGo',
-            type: 'web_results',
-            query: query,
-            data: {
-              results: results,
-              total: results.length
-            }
-          };
-        }
-      }
-    }
-    
-    // Fallback: Try Wikipedia
-    const wikiResponse = await fetch(
-      `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(query)}`
-    );
-    
-    if (wikiResponse.ok) {
-      const wikiData = await wikiResponse.json();
-      
-      if (wikiData.extract) {
-        return {
-          success: true,
-          source: 'Wikipedia',
-          type: 'summary',
-          query: query,
-          data: {
-            summary: wikiData.extract,
-            title: wikiData.title,
-            url: wikiData.content_urls?.desktop?.page || `https://en.wikipedia.org/wiki/${encodeURIComponent(query)}`,
-            image: wikiData.thumbnail?.source,
-            fullUrl: wikiData.content_urls?.desktop?.page
-          }
-        };
-      }
-    }
-    
-    // If nothing found
-    return {
-      success: false,
-      message: 'No information found on the web.',
-      query: query
-    };
-    
-  } catch (error) {
-    console.error('Web search error:', error);
-    return {
-      success: false,
-      message: 'Search service is temporarily unavailable.',
-      error: error.message
-    };
+// NEW: Generate unique quiz ID
+function generateQuizId() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let id = '';
+  for (let i = 0; i < 6; i++) {
+    id += chars.charAt(Math.floor(Math.random() * chars.length));
   }
+  return id;
 }
 
-async function getAIResponseWithWebSearch(userMessage, userId) {
-  try {
-    // First try web search for factual questions
-    const isQuestion = /^(who|what|when|where|why|how)\s+/i.test(userMessage) || 
-                      userMessage.includes('?');
-    
-    if (isQuestion) {
-      const searchResult = await webSearch(userMessage);
-      
-      if (searchResult.success) {
-        let context = '';
-        
-        if (searchResult.type === 'instant_answer' || searchResult.type === 'summary') {
-          context = `Here's information from ${searchResult.source}:\n\n${searchResult.data.summary}\n\n`;
-          if (searchResult.data.url) {
-            context += `Source: ${searchResult.data.url}\n\n`;
-          }
-        } else if (searchResult.type === 'web_results') {
-          context = `Here are web search results:\n\n`;
-          searchResult.data.results.forEach((result, index) => {
-            context += `${index + 1}. *${result.title}*\n`;
-            if (result.snippet) context += `   ${result.snippet}\n`;
-            if (result.url) context += `   ${result.url}\n\n`;
-          });
-        }
-        
-        // Combine web search with AI
-        const messages = [
-          { 
-            role: "system", 
-            content: `You are a helpful AI assistant. Use the web search results below to answer accurately. 
-            If the information is not in the search results, say so clearly. 
-            Always cite your sources when using web information.` 
-          },
-          { role: "user", content: context + `Based on this information, answer: ${userMessage}` }
-        ];
-        
-        const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${GROQ_API_KEY}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            model: "llama-3.1-8b-instant",
-            messages,
-            temperature: 0.7,
-            max_tokens: 500
-          })
-        });
-        
-        if (response.ok) {
-          const data = await response.json();
-          const reply = data.choices[0].message.content;
-          
-          // Add to conversation history
-          const userData = getUserData(userId);
-          userData.messages.push({ role: "user", content: userMessage });
-          userData.messages.push({ role: "assistant", content: reply });
-          
-          // Keep only last 10 messages
-          if (userData.messages.length > 10) {
-            userData.messages = userData.messages.slice(-10);
-          }
-          
-          return reply;
-        }
-      }
-    }
-    
-    // Fallback to normal AI response
-    return await getAIResponse(userMessage, userId);
-    
-  } catch (error) {
-    console.error('AI with web search error:', error);
-    return await getAIResponse(userMessage, userId);
-  }
+// NEW: Store shared quiz
+function storeSharedQuiz(quizData) {
+  const quizId = generateQuizId();
+  sharedQuizzes.set(quizId, {
+    ...quizData,
+    id: quizId,
+    createdAt: Date.now(),
+    plays: 0,
+    shares: 0,
+    players: []
+  });
+  return quizId;
 }
 
-// ==================== AI CHATBOT WITH MEMORY ====================
-async function getAIResponse(userMessage, userId) {
-  const userData = getUserData(userId);
-  
-  // Add to conversation history
-  userData.messages.push({ role: "user", content: userMessage });
-  
-  // Keep only last 10 messages
-  if (userData.messages.length > 10) {
-    userData.messages = userData.messages.slice(-10);
-  }
-  
-  const messages = [
-    { 
-      role: "system", 
-      content: `You are a helpful AI assistant with conversation memory. 
-      You can also create quizzes, set reminders, and search the web.
-      
-      Available commands users can use:
-      - /search [query] - Search the web
-      - /quiz [topic] - Create a quiz
-      - /remind [time] [message] - Set reminder
-      - /myreminders - View reminders
-      - /mystats - View quiz stats
-      
-      Be friendly, helpful, and remember the conversation context.` 
-    },
-    ...userData.messages
-  ];
-  
-  try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${GROQ_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "llama-3.1-8b-instant",
-        messages,
-        temperature: 0.7,
-        max_tokens: 500
-      })
+// NEW: Get shared quiz
+function getSharedQuiz(quizId) {
+  return sharedQuizzes.get(quizId);
+}
+
+// NEW: Track quiz play
+function trackQuizPlay(quizId, userId, score) {
+  const quiz = sharedQuizzes.get(quizId);
+  if (quiz) {
+    quiz.plays++;
+    quiz.players.push({
+      userId,
+      score,
+      playedAt: Date.now()
     });
     
-    const data = await response.json();
-    const reply = data.choices[0].message.content;
-    
-    // Add assistant response to history
-    userData.messages.push({ role: "assistant", content: reply });
-    
-    return reply;
-    
-  } catch (error) {
-    console.error('AI error:', error);
-    return "I'm having trouble connecting right now. Please try again!";
+    // Keep only last 100 players
+    if (quiz.players.length > 100) {
+      quiz.players = quiz.players.slice(-100);
+    }
   }
 }
 
@@ -289,7 +98,7 @@ async function generateQuiz(topic, difficulty = 'medium', questionCount = 5) {
   Correct: [A/B/C/D]
   Explanation: [Brief explanation]
   
-  Now create ${questionCount} questions about "${topic}". Make them educational and interesting.`;
+  Now create ${questionCount} questions about "${topic}".`;
   
   try {
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -309,7 +118,6 @@ async function generateQuiz(topic, difficulty = 'medium', questionCount = 5) {
     const data = await response.json();
     const content = data.choices[0].message.content;
     
-    // Parse the quiz
     const questions = [];
     const lines = content.split('\n');
     let currentQuestion = null;
@@ -317,9 +125,8 @@ async function generateQuiz(topic, difficulty = 'medium', questionCount = 5) {
     for (const line of lines) {
       if (line.startsWith('Q')) {
         if (currentQuestion) questions.push(currentQuestion);
-        const match = line.match(/Q\d+:\s*(.+)/);
         currentQuestion = {
-          question: match ? match[1] : line.substring(line.indexOf(':') + 1).trim(),
+          question: line.substring(line.indexOf(':') + 1).trim(),
           options: [],
           correct: -1,
           explanation: '',
@@ -389,7 +196,8 @@ function sendQuizQuestion(ctx, quiz, userId) {
   }
 }
 
-function endQuiz(ctx, quiz, userId) {
+// NEW: Enhanced endQuiz with sharing options
+function endQuiz(ctx, quiz, userId, isSharedQuiz = false, sharedQuizId = null) {
   const userData = getUserData(userId);
   const timeTaken = Math.floor((Date.now() - quiz.startTime) / 1000);
   const percentage = Math.round((quiz.score / quiz.questions.length) * 100);
@@ -408,6 +216,11 @@ function endQuiz(ctx, quiz, userId) {
     userData.stats.currentStreak = 0;
   }
   
+  // Track shared quiz play
+  if (isSharedQuiz && sharedQuizId) {
+    trackQuizPlay(sharedQuizId, userId, percentage);
+  }
+  
   let grade = 'F';
   if (percentage >= 90) grade = 'A+';
   else if (percentage >= 80) grade = 'A';
@@ -422,26 +235,84 @@ function endQuiz(ctx, quiz, userId) {
   resultText += `🎯 *Topic:* ${quiz.topic}\n`;
   resultText += `📈 *Difficulty:* ${quiz.difficulty}\n\n`;
   
+  // Add question review
+  resultText += `*Question Review:*\n`;
   quiz.questions.forEach((q, index) => {
     const userAnswer = quiz.answers[index];
     const correctLetter = String.fromCharCode(65 + q.correct);
     const userLetter = userAnswer ? String.fromCharCode(65 + userAnswer) : 'Skipped';
     const correctSymbol = userAnswer === q.correct ? '✅' : '❌';
+    
     resultText += `${index + 1}. ${correctSymbol} You chose ${userLetter} (Correct: ${correctLetter})\n`;
   });
   
-  resultText += `\n📚 *Want another quiz?* Use /quiz [topic]`;
+  // Store for sharing if not already shared
+  let shareQuizId = null;
+  if (!isSharedQuiz) {
+    shareQuizId = storeSharedQuiz({
+      ...quiz,
+      creatorId: userId,
+      creatorName: ctx.from.first_name
+    });
+    
+    // Update creator stats
+    userData.stats.quizzesCreated++;
+  }
   
-  const statsKeyboard = Markup.inlineKeyboard([
-    [Markup.button.callback('📊 View Stats', 'view_stats')],
-    [Markup.button.callback('🎯 New Quiz', 'new_quiz')]
-  ]);
+  // Create sharing keyboard
+  const shareUrl = shareQuizId ? 
+    `https://t.me/${ctx.botInfo.username}?start=quiz_${shareQuizId}` : 
+    null;
+  
+  const keyboardButtons = [];
+  
+  if (shareQuizId) {
+    keyboardButtons.push([
+      Markup.button.callback('📤 Share Quiz', `share_${shareQuizId}`),
+      Markup.button.callback('👥 See Shares', `shares_${shareQuizId}`)
+    ]);
+  }
+  
+  keyboardButtons.push(
+    [Markup.button.callback('🎯 New Quiz', 'new_quiz')],
+    [Markup.button.callback('📊 My Stats', 'view_stats')]
+  );
+  
+  const keyboard = Markup.inlineKeyboard(keyboardButtons);
+  
+  // Add sharing info to message
+  if (shareQuizId) {
+    resultText += `\n✨ *Quiz Shared Successfully!*\n`;
+    resultText += `🔗 *Share Code:* ${shareQuizId}\n`;
+    resultText += `👥 *Share with friends to challenge them!*`;
+  } else if (isSharedQuiz) {
+    const sharedQuiz = getSharedQuiz(sharedQuizId);
+    if (sharedQuiz) {
+      resultText += `\n👑 *Shared Quiz Stats:*\n`;
+      resultText += `🎮 Total Plays: ${sharedQuiz.plays}\n`;
+      resultText += `📤 Shared: ${sharedQuiz.shares} times\n`;
+      
+      // Compare with creator's score
+      const creatorScore = sharedQuiz.players.find(p => p.userId === sharedQuiz.creatorId);
+      if (creatorScore) {
+        resultText += `🏆 Creator's Score: ${creatorScore.score}%\n`;
+        if (percentage > creatorScore.score) {
+          resultText += `🎉 *You beat the creator!*\n`;
+        } else if (percentage === creatorScore.score) {
+          resultText += `🤝 *You tied with the creator!*\n`;
+        }
+      }
+    }
+  }
   
   activeQuizzes.delete(userId);
   ctx.editMessageText(resultText, { 
     parse_mode: 'Markdown',
-    ...statsKeyboard
+    ...keyboard
   });
+  
+  // Return share URL for additional sharing options
+  return shareUrl;
 }
 
 // ==================== REMINDER SYSTEM ====================
@@ -450,11 +321,10 @@ function parseReminderTime(timeStr) {
   const timeUnits = {
     'min': 60 * 1000, 'mins': 60 * 1000,
     'h': 60 * 60 * 1000, 'hour': 60 * 60 * 1000, 'hours': 60 * 60 * 1000,
-    'd': 24 * 60 * 60 * 1000, 'day': 24 * 60 * 60 * 1000, 'days': 24 * 60 * 60 * 1000,
-    'week': 7 * 24 * 60 * 60 * 1000, 'weeks': 7 * 24 * 60 * 60 * 1000
+    'd': 24 * 60 * 60 * 1000, 'day': 24 * 60 * 60 * 1000, 'days': 24 * 60 * 60 * 1000
   };
   
-  const match = timeStr.match(/(\d+)\s*(min|mins|h|hour|hours|d|day|days|week|weeks)/i);
+  const match = timeStr.match(/(\d+)\s*(min|mins|h|hour|hours|d|day|days)/i);
   if (match) {
     const value = parseInt(match[1]);
     const unit = match[2].toLowerCase();
@@ -527,132 +397,250 @@ function addReminder(userId, time, message, chatId, repeat = false, repeatInterv
   return reminder;
 }
 
+// ==================== AI CHATBOT ====================
+async function getAIResponse(userMessage, userId) {
+  const userData = getUserData(userId);
+  
+  userData.messages.push({ role: "user", content: userMessage });
+  
+  if (userData.messages.length > 10) {
+    userData.messages = userData.messages.slice(-10);
+  }
+  
+  const messages = [
+    { 
+      role: "system", 
+      content: `You are a helpful AI assistant. You can create quizzes and set reminders.
+      
+      Available commands:
+      - /quiz [topic] - Create quiz
+      - /remind [time] [message] - Set reminder
+      - /myreminders - View reminders
+      - /mystats - View stats
+      - /sharedquiz [code] - Play shared quiz
+      
+      You can now SHARE quizzes with friends!` 
+    },
+    ...userData.messages
+  ];
+  
+  try {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${GROQ_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-8b-instant",
+        messages,
+        temperature: 0.7,
+        max_tokens: 500
+      })
+    });
+    
+    const data = await response.json();
+    const reply = data.choices[0].message.content;
+    
+    userData.messages.push({ role: "assistant", content: reply });
+    
+    return reply;
+    
+  } catch (error) {
+    console.error('AI error:', error);
+    return "I'm having trouble connecting right now. Please try again!";
+  }
+}
+
 // ==================== BOT COMMANDS ====================
 
-bot.start((ctx) => {
+bot.start(async (ctx) => {
+  const args = ctx.message.text.split(' ');
+  
+  // Check if starting with shared quiz
+  if (args.length > 1 && args[1].startsWith('quiz_')) {
+    const quizId = args[1].replace('quiz_', '');
+    const sharedQuiz = getSharedQuiz(quizId);
+    
+    if (sharedQuiz) {
+      // Start the shared quiz
+      const userId = ctx.from.id;
+      const quiz = {
+        ...sharedQuiz,
+        id: Date.now(),
+        currentQuestion: 0,
+        score: 0,
+        answers: [],
+        startTime: Date.now(),
+        totalPoints: sharedQuiz.questions.length * (sharedQuiz.difficulty === 'easy' ? 10 : 
+                      sharedQuiz.difficulty === 'hard' ? 25 : 15)
+      };
+      
+      activeQuizzes.set(userId, quiz);
+      sendQuizQuestion(ctx, quiz, userId);
+      return;
+    } else {
+      ctx.reply('❌ This quiz link has expired or is invalid.', { parse_mode: 'Markdown' });
+    }
+  }
+  
+  // Normal start command
   const welcomeText = `
-🤖 *Ultimate AI Assistant Bot* 🚀
+🤖 *Ultimate Quiz Bot* 🚀
 
-🔍 **NEW: Web Search**
-• /search [query] - Search the web
-• Get real-time information
-• Powered by DuckDuckGo & Wikipedia
+✨ **NEW: Quiz Sharing System!**
+• Create quizzes and share with friends
+• Challenge others with your quizzes
+• Track who played your quizzes
+• Compare scores with friends
 
-🎯 **Quiz System** (Like QuizBot)
-• /quiz [topic] - Interactive quizzes
+🎯 **Quiz Features:**
+• Interactive quizzes with buttons
 • Multiple difficulties
-• Score tracking
+• Score tracking & statistics
+• Shareable quiz links
 
-⏰ **Advanced Reminders**
-• /remind [time] [message]
-• Repeating reminders
+⏰ **Reminder System:**
+• Smart reminders
 • Flexible time formats
+• Repeating reminders
 
-💬 **AI Chat with Memory**
-• Remembers conversation
-• Context-aware responses
-• Powered by Groq AI
+💬 **AI Chat:**
+• Smart conversations
+• Context memory
+• Quiz recommendations
 
 📋 **Commands:**
-/search [query] - Web search
 /quiz [topic] - Create quiz
+/sharedquiz [code] - Play shared quiz
+/myshares - Your shared quizzes
 /remind [time] [msg] - Set reminder
 /myreminders - View reminders
-/mystats - View quiz stats
+/mystats - View statistics
 /help - Detailed help
 
-*Just send a message to chat!*`;
+*Try creating and sharing a quiz!*`;
   
   ctx.reply(welcomeText, { parse_mode: 'Markdown' });
 });
 
-// ==================== SEARCH COMMAND ====================
-bot.command('search', async (ctx) => {
-  const query = ctx.message.text.replace('/search ', '').trim();
+// NEW: Play shared quiz command
+bot.command('sharedquiz', async (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
   
-  if (!query) {
+  if (args.length === 0) {
     return ctx.reply(
-      `🔍 *Web Search Command*\n\n` +
-      `Usage: /search [your query]\n\n` +
+      `🎮 *Play Shared Quiz*\n\n` +
+      `Usage: /sharedquiz [quiz-code]\n\n` +
+      `*Get quiz codes from friends who shared quizzes*\n\n` +
       `*Examples:*\n` +
-      `/search who is Elon Musk\n` +
-      `/search latest AI news\n` +
-      `/search weather in London\n` +
-      `/search python programming tutorial\n\n` +
-      `I'll search the web and provide accurate information!`,
+      `/sharedquiz ABC123\n` +
+      `/sharedquiz XYZ789\n\n` +
+      `Or click shared quiz links from friends!`,
       { parse_mode: 'Markdown' }
     );
   }
   
-  await ctx.sendChatAction('typing');
+  const quizId = args[0].toUpperCase();
+  const sharedQuiz = getSharedQuiz(quizId);
   
-  const searchResult = await webSearch(query);
-  
-  if (!searchResult.success) {
-    return ctx.reply(`❌ *No results found for:* "${query}"\n\nTry a different search query.`, { parse_mode: 'Markdown' });
+  if (!sharedQuiz) {
+    return ctx.reply(
+      `❌ *Quiz Not Found*\n\n` +
+      `Quiz code "${quizId}" is invalid or expired.\n\n` +
+      `Make sure:\n` +
+      `• Code is correct (6 characters)\n` +
+      `• Quiz hasn't expired\n` +
+      `• Ask friend to reshare the quiz`,
+      { parse_mode: 'Markdown' }
+    );
   }
   
-  let response = `🔍 *Search Results for:* "${query}"\n`;
-  response += `🌐 *Source:* ${searchResult.source}\n\n`;
+  const userId = ctx.from.id;
   
-  if (searchResult.type === 'instant_answer' || searchResult.type === 'summary') {
-    response += `${searchResult.data.summary}\n\n`;
-    
-    if (searchResult.data.url) {
-      response += `📚 *Source:* ${searchResult.data.url}\n`;
-    }
-    
-    if (searchResult.data.image) {
-      try {
-        await ctx.replyWithPhoto(searchResult.data.image, {
-          caption: response,
-          parse_mode: 'Markdown'
-        });
-        return;
-      } catch (error) {
-        // If photo fails, send as text
-        response += `\n🖼️ [Image available at source]`;
-      }
-    }
-    
-    if (searchResult.data.related && searchResult.data.related.length > 0) {
-      response += `\n🔗 *Related:*\n`;
-      searchResult.data.related.forEach((link, index) => {
-        response += `${index + 1}. ${link.text}\n`;
-      });
-    }
-    
-  } else if (searchResult.type === 'web_results') {
-    searchResult.data.results.forEach((result, index) => {
-      response += `${index + 1}. *${result.title}*\n`;
-      if (result.snippet) response += `   ${result.snippet}\n`;
-      if (result.url) response += `   ${result.url}\n\n`;
-    });
-    
-    response += `📊 *Found ${searchResult.data.total} results*\n`;
+  // Check if already in a quiz
+  if (activeQuizzes.has(userId)) {
+    return ctx.reply('⚠️ Finish your current quiz first!');
   }
   
-  response += `\n💡 *Tip:* Ask follow-up questions for more details!`;
+  ctx.reply(
+    `🎮 *Playing Shared Quiz*\n\n` +
+    `🎯 *Topic:* ${sharedQuiz.topic}\n` +
+    `📈 *Difficulty:* ${sharedQuiz.difficulty}\n` +
+    `👤 *Creator:* ${sharedQuiz.creatorName}\n` +
+    `🎮 *Plays:* ${sharedQuiz.plays}\n\n` +
+    `*Starting quiz...*`,
+    { parse_mode: 'Markdown' }
+  );
   
-  // Split long messages
-  if (response.length > 4000) {
-    const parts = response.match(/[\s\S]{1,4000}/g);
-    for (let i = 0; i < parts.length; i++) {
-      await ctx.reply(parts[i], { 
-        parse_mode: 'Markdown',
-        disable_web_page_preview: i > 0
-      });
-      if (i < parts.length - 1) await new Promise(resolve => setTimeout(resolve, 100));
-    }
-  } else {
-    await ctx.reply(response, { 
-      parse_mode: 'Markdown',
-      disable_web_page_preview: false
-    });
-  }
+  const quiz = {
+    ...sharedQuiz,
+    id: Date.now(),
+    currentQuestion: 0,
+    score: 0,
+    answers: [],
+    startTime: Date.now(),
+    totalPoints: sharedQuiz.questions.length * (sharedQuiz.difficulty === 'easy' ? 10 : 
+                  sharedQuiz.difficulty === 'hard' ? 25 : 15)
+  };
+  
+  activeQuizzes.set(userId, quiz);
+  sendQuizQuestion(ctx, quiz, userId);
 });
 
-// ==================== QUIZ COMMAND ====================
+// NEW: View my shared quizzes
+bot.command('myshares', (ctx) => {
+  const userId = ctx.from.id;
+  const userData = getUserData(userId);
+  
+  // Find quizzes created by this user
+  const myQuizzes = Array.from(sharedQuizzes.entries())
+    .filter(([_, quiz]) => quiz.creatorId === userId)
+    .sort((a, b) => b[1].createdAt - a[1].createdAt)
+    .slice(0, 10);
+  
+  if (myQuizzes.length === 0) {
+    return ctx.reply(
+      `📭 *No Shared Quizzes Yet*\n\n` +
+      `Create and share your first quiz!\n\n` +
+      `Use: /quiz [topic]\n` +
+      `Then click "Share Quiz" after completion\n\n` +
+      `Share with friends and track their scores!`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+  
+  let sharesText = `📤 *Your Shared Quizzes (${myQuizzes.length})*\n\n`;
+  
+  myQuizzes.forEach(([quizId, quiz], index) => {
+    const shareUrl = `https://t.me/${ctx.botInfo.username}?start=quiz_${quizId}`;
+    const avgScore = quiz.players.length > 0 ? 
+      Math.round(quiz.players.reduce((sum, p) => sum + p.score, 0) / quiz.players.length) : 0;
+    
+    sharesText += `${index + 1}. *${quiz.topic}*\n`;
+    sharesText += `   🔗 *Code:* \`${quizId}\`\n`;
+    sharesText += `   📊 *Plays:* ${quiz.plays}\n`;
+    sharesText += `   ⭐ *Avg Score:* ${avgScore}%\n`;
+    sharesText += `   📤 *Shares:* ${quiz.shares}\n`;
+    sharesText += `   🕐 *Created:* ${new Date(quiz.createdAt).toLocaleDateString()}\n\n`;
+  });
+  
+  sharesText += `*Share Links:*\n`;
+  sharesText += `Send the code to friends: \`/sharedquiz CODE\`\n`;
+  sharesText += `Or share the direct link!`;
+  
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback('🎯 Create New Quiz', 'new_quiz')],
+    [Markup.button.callback('📊 View Stats', 'view_stats')]
+  ]);
+  
+  ctx.reply(sharesText, { 
+    parse_mode: 'Markdown',
+    ...keyboard 
+  });
+});
+
+// Quiz command
 bot.command('quiz', async (ctx) => {
   const userId = ctx.from.id;
   const args = ctx.message.text.split(' ').slice(1);
@@ -660,12 +648,16 @@ bot.command('quiz', async (ctx) => {
   if (args.length === 0) {
     return ctx.reply(
       `🎯 *Quiz Creator*\n\n` +
+      `Create quizzes and share with friends!\n\n` +
       `Usage: /quiz [topic] [difficulty]\n\n` +
       `*Examples:*\n` +
       `/quiz electricity\n` +
       `/quiz science easy\n` +
       `/quiz history hard\n\n` +
-      `*Difficulties:* easy, medium, hard`,
+      `*After quiz, you can:*\n` +
+      `• Share with friends\n` +
+      `• Track who plays it\n` +
+      `• Compare scores`,
       { parse_mode: 'Markdown' }
     );
   }
@@ -697,7 +689,7 @@ bot.command('quiz', async (ctx) => {
   sendQuizQuestion(ctx, quiz, userId);
 });
 
-// ==================== REMINDER COMMAND ====================
+// Reminder commands (unchanged)
 bot.command('remind', (ctx) => {
   const args = ctx.message.text.split(' ').slice(1);
   
@@ -705,16 +697,9 @@ bot.command('remind', (ctx) => {
     return ctx.reply(
       `⏰ *Reminder System*\n\n` +
       `Usage: /remind [time] [message]\n\n` +
-      `*Time Formats:*\n` +
-      `• 30min - In 30 minutes\n` +
-      `• 2h - In 2 hours\n` +
-      `• 1d - In 1 day\n` +
-      `• 14:30 - At 2:30 PM\n` +
-      `• tomorrow 9am - Tomorrow at 9 AM\n\n` +
       `*Examples:*\n` +
-      `/remind 45min Take medicine\n` +
-      `/remind tomorrow 8am Meeting\n` +
-      `/remind 1d Call mom`,
+      `/remind 30min Drink water\n` +
+      `/remind tomorrow 9am Meeting`,
       { parse_mode: 'Markdown' }
     );
   }
@@ -728,8 +713,7 @@ bot.command('remind', (ctx) => {
     `✅ *Reminder Set!*\n\n` +
     `📝 *Task:* ${message}\n` +
     `⏰ *Time:* ${reminder.triggerTime.toLocaleString()}\n` +
-    `🆔 *ID:* ${reminder.id}\n\n` +
-    `Use /myreminders to manage.`,
+    `🆔 *ID:* ${reminder.id}`,
     { parse_mode: 'Markdown' }
   );
 });
@@ -746,41 +730,14 @@ bot.command('myreminders', (ctx) => {
   let reminderList = `📋 *Your Reminders (${reminders.length})*\n\n`;
   
   reminders.forEach((reminder, index) => {
-    const repeatText = reminder.repeat ? '🔄 Repeating' : '⏰ One-time';
     reminderList += `${index + 1}. *ID:* ${reminder.id}\n`;
     reminderList += `   *Task:* ${reminder.message}\n`;
-    reminderList += `   *Time:* ${reminder.triggerTime.toLocaleString()}\n`;
-    reminderList += `   ${repeatText}\n\n`;
+    reminderList += `   *Time:* ${reminder.triggerTime.toLocaleString()}\n\n`;
   });
   
   reminderList += `*Manage:* /cancelreminder [ID]`;
   
   ctx.reply(reminderList, { parse_mode: 'Markdown' });
-});
-
-bot.command('cancelreminder', (ctx) => {
-  const args = ctx.message.text.split(' ').slice(1);
-  
-  if (args.length === 0) {
-    return ctx.reply('Usage: /cancelreminder [ID]\nUse /myreminders to see IDs');
-  }
-  
-  const reminderId = parseInt(args[0]);
-  const userId = ctx.from.id;
-  const userData = getUserData(userId);
-  
-  const index = userData.reminders.findIndex(r => r.id === reminderId);
-  
-  if (index === -1) {
-    return ctx.reply('❌ Reminder not found!');
-  }
-  
-  const reminder = userData.reminders[index];
-  clearTimeout(reminder.timeoutId);
-  reminder.active = false;
-  userData.reminders.splice(index, 1);
-  
-  ctx.reply(`✅ Reminder #${reminderId} cancelled!`);
 });
 
 bot.command('mystats', (ctx) => {
@@ -794,15 +751,20 @@ bot.command('mystats', (ctx) => {
   const statsText = `
 📊 *Your Statistics*
 
-🎯 *Quizzes:*
+🎯 *Quiz Performance:*
 • Total Quizzes: ${stats.totalQuizzes}
 • Questions: ${stats.totalQuestions}
 • Correct: ${stats.totalCorrect}
 • Accuracy: ${accuracy}%
-• Streak: ${stats.currentStreak}
+• Current Streak: ${stats.currentStreak}
 • Best Streak: ${stats.bestStreak}
 
-💪 *Keep learning!*`;
+📤 *Sharing Stats:*
+• Quizzes Created: ${stats.quizzesCreated}
+• Quizzes Shared: ${stats.quizzesShared}
+• Total Plays: ${stats.totalQuizzesCreated || 0}
+
+💪 *Keep creating and sharing quizzes!*`;
   
   ctx.reply(statsText, { parse_mode: 'Markdown' });
 });
@@ -811,35 +773,32 @@ bot.command('help', (ctx) => {
   const helpText = `
 🆘 *Complete Help Guide*
 
-🔍 *WEB SEARCH:*
-/search [query] - Search web
-/search Elon Musk - Person info
-/search weather London - Weather
-/search latest news - News
-
 🎯 *QUIZ SYSTEM:*
 /quiz [topic] - Create quiz
-/quiz science - Science quiz
-/quiz history easy - Easy history
-/quiz math hard - Hard math
-/mystats - View stats
+/sharedquiz [code] - Play friend's quiz
+/myshares - View your shared quizzes
+
+*Sharing Features:*
+• After quiz, click "Share Quiz"
+• Get unique quiz code
+• Share code or direct link
+• Track who plays your quiz
+• Compare scores with friends
 
 ⏰ *REMINDERS:*
 /remind [time] [message]
-/remind 30min Drink water
-/remind tomorrow 9am Meeting
-/myreminders - View all
+/myreminders - View reminders
 /cancelreminder [ID] - Cancel
+
+📊 *STATS:*
+/mystats - View statistics
 
 💬 *AI CHAT:*
 Just send any message!
-I remember last 10 messages
-Can answer any question
 
 ❓ *Examples:*
-"Explain quantum physics"
-"/search who invented Python"
-"/quiz space exploration"
+"/quiz science"
+"/sharedquiz ABC123"
 "/remind 1h Take break"
   `;
   
@@ -858,11 +817,14 @@ bot.action(/quiz_(\d+)_/, async (ctx) => {
     return ctx.answerCbQuery('Quiz expired!');
   }
   
+  // Check if this is a shared quiz
+  const isSharedQuiz = quiz.sharedQuizId !== undefined;
+  
   if (action === 'skip') {
     quiz.answers.push(null);
     quiz.currentQuestion++;
   } else if (action === 'end') {
-    return endQuiz(ctx, quiz, userId);
+    return endQuiz(ctx, quiz, userId, isSharedQuiz, quiz.sharedQuizId);
   } else {
     const answerIndex = parseInt(action);
     const isCorrect = answerIndex === quiz.questions[quiz.currentQuestion].correct;
@@ -885,13 +847,101 @@ bot.action(/quiz_(\d+)_/, async (ctx) => {
   }
   
   if (quiz.currentQuestion >= quiz.questions.length) {
-    endQuiz(ctx, quiz, userId);
+    endQuiz(ctx, quiz, userId, isSharedQuiz, quiz.sharedQuizId);
   } else {
     sendQuizQuestion(ctx, quiz, userId);
   }
 });
 
-// Handle inline buttons
+// NEW: Handle share button
+bot.action(/share_/, async (ctx) => {
+  const quizId = ctx.callbackQuery.data.replace('share_', '');
+  const quiz = getSharedQuiz(quizId);
+  
+  if (!quiz) {
+    return ctx.answerCbQuery('Quiz expired!');
+  }
+  
+  const shareUrl = `https://t.me/${ctx.botInfo.username}?start=quiz_${quizId}`;
+  const shareText = `🎮 *Quiz Challenge!*\n\n` +
+    `I challenge you to take my quiz!\n\n` +
+    `🎯 *Topic:* ${quiz.topic}\n` +
+    `📈 *Difficulty:* ${quiz.difficulty}\n` +
+    `👤 *Created by:* ${ctx.from.first_name}\n\n` +
+    `🔗 *Play here:* ${shareUrl}\n` +
+    `🔢 *Or use code:* \`${quizId}\`\n\n` +
+    `Can you beat my score? 💪`;
+  
+  // Update shares count
+  quiz.shares++;
+  
+  // Update user stats
+  const userData = getUserData(ctx.from.id);
+  userData.stats.quizzesShared++;
+  
+  const keyboard = Markup.inlineKeyboard([
+    [
+      Markup.button.url('📱 Share on Telegram', `https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent(`🎮 Quiz Challenge! Can you beat my score?`)}`),
+    ],
+    [
+      Markup.button.callback('📋 Copy Code', `copy_${quizId}`),
+      Markup.button.callback('👥 See Players', `players_${quizId}`)
+    ]
+  ]);
+  
+  await ctx.editMessageText(
+    `📤 *Quiz Shared Successfully!*\n\n` +
+    `🔗 *Share Link:* ${shareUrl}\n` +
+    `🔢 *Share Code:* \`${quizId}\`\n\n` +
+    `*Share Options:*\n` +
+    `1. Send the link to friends\n` +
+    `2. Or tell them to use: /sharedquiz ${quizId}\n\n` +
+    `Track who plays and compare scores!`,
+    {
+      parse_mode: 'Markdown',
+      ...keyboard
+    }
+  );
+});
+
+// NEW: Handle copy code
+bot.action(/copy_/, async (ctx) => {
+  const quizId = ctx.callbackQuery.data.replace('copy_', '');
+  await ctx.answerCbQuery(`Code copied: ${quizId}`);
+});
+
+// NEW: Handle view players
+bot.action(/players_/, async (ctx) => {
+  const quizId = ctx.callbackQuery.data.replace('players_', '');
+  const quiz = getSharedQuiz(quizId);
+  
+  if (!quiz || quiz.players.length === 0) {
+    return ctx.answerCbQuery('No players yet!');
+  }
+  
+  let playersText = `👥 *Quiz Players (${quiz.players.length})*\n\n`;
+  
+  // Show top 10 players
+  const topPlayers = [...quiz.players]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10);
+  
+  topPlayers.forEach((player, index) => {
+    const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`;
+    playersText += `${medal} Score: ${player.score}%\n`;
+  });
+  
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback('🔙 Back', `shares_${quizId}`)]
+  ]);
+  
+  await ctx.editMessageText(playersText, {
+    parse_mode: 'Markdown',
+    ...keyboard
+  });
+});
+
+// Handle other inline buttons
 bot.action('view_stats', (ctx) => {
   const userId = ctx.from.id;
   const userData = getUserData(userId);
@@ -907,13 +957,14 @@ bot.action('view_stats', (ctx) => {
 ✅ Correct: ${stats.totalCorrect}/${stats.totalQuestions}
 📈 Accuracy: ${accuracy}%
 🔥 Streak: ${stats.currentStreak}
-🏆 Best: ${stats.bestStreak}`;
+🏆 Best: ${stats.bestStreak}
+📤 Shared: ${stats.quizzesShared} quizzes`;
   
   ctx.editMessageText(statsText, { 
     parse_mode: 'Markdown',
     ...Markup.inlineKeyboard([
       [Markup.button.callback('🎯 New Quiz', 'new_quiz')],
-      [Markup.button.callback('🔍 Search', 'do_search')]
+      [Markup.button.callback('📤 My Shares', 'my_shares')]
     ])
   });
 });
@@ -922,40 +973,31 @@ bot.action('new_quiz', (ctx) => {
   ctx.editMessageText(
     `🎯 *Create New Quiz*\n\n` +
     `Send: /quiz [topic] [difficulty]\n\n` +
-    `*Examples:*\n` +
-    `/quiz physics\n` +
-    `/quiz chemistry easy\n` +
-    `/quiz biology hard`,
+    `*After quiz, you can share it with friends!*`,
     { parse_mode: 'Markdown' }
   );
 });
 
-bot.action('do_search', (ctx) => {
+bot.action('my_shares', (ctx) => {
   ctx.editMessageText(
-    `🔍 *Web Search*\n\n` +
-    `Send: /search [query]\n\n` +
-    `*Examples:*\n` +
-    `/search Elon Musk\n` +
-    `/search latest AI news\n` +
-    `/search weather in Tokyo`,
+    `📤 *My Shared Quizzes*\n\n` +
+    `Send: /myshares\n\n` +
+    `View all quizzes you've created and shared with friends!`,
     { parse_mode: 'Markdown' }
   );
 });
 
-// Handle all text messages (AI Chat with Web Search)
+// Handle all text messages
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const message = ctx.message.text;
   
-  // Skip if it's a command
   if (message.startsWith('/')) return;
-  // Skip if it's a quiz answer
   if (/^[A-Da-d]$/.test(message)) return;
   
   await ctx.sendChatAction('typing');
   
-  // Get AI response with web search for questions
-  const response = await getAIResponseWithWebSearch(message, userId);
+  const response = await getAIResponse(message, userId);
   
   await ctx.reply(response, { parse_mode: 'Markdown' });
 });
@@ -967,11 +1009,12 @@ export default async function handler(req, res) {
   if (req.method === 'GET') {
     return res.status(200).json({
       status: 'online',
-      bot: 'Ultimate AI Assistant',
-      features: ['web-search', 'quiz', 'reminders', 'ai-chat'],
+      bot: 'Quiz Bot with Sharing',
+      features: ['quiz-sharing', 'reminders', 'ai-chat'],
       stats: {
         users: userSessions.size,
         activeQuizzes: activeQuizzes.size,
+        sharedQuizzes: sharedQuizzes.size,
         totalReminders: Array.from(userSessions.values())
           .reduce((sum, user) => sum + user.reminders.length, 0)
       }
@@ -991,4 +1034,4 @@ export default async function handler(req, res) {
   return res.status(405).json({ error: 'Method not allowed' });
 }
 
-console.log('🤖 Ultimate Bot with Web Search loaded!');
+console.log('🤖 Quiz Bot with Sharing System loaded!');
