@@ -29,7 +29,248 @@ function getUserData(userId) {
   return userSessions.get(userId);
 }
 
-// ==================== QUIZ SYSTEM (Like QuizBot) ====================
+// ==================== WEB SEARCH SYSTEM ====================
+async function webSearch(query, maxResults = 5) {
+  try {
+    console.log(`🔍 Web searching: "${query}"`);
+    
+    // Try DuckDuckGo first (free, no API key needed)
+    const ddgResponse = await fetch(
+      `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`
+    );
+    
+    if (ddgResponse.ok) {
+      const ddgData = await ddgResponse.json();
+      
+      // Check for instant answer
+      if (ddgData.AbstractText) {
+        return {
+          success: true,
+          source: 'DuckDuckGo',
+          type: 'instant_answer',
+          query: query,
+          data: {
+            summary: ddgData.AbstractText,
+            source: ddgData.AbstractSource || 'Web',
+            url: ddgData.AbstractURL,
+            image: ddgData.Image ? `https://duckduckgo.com${ddgData.Image}` : null,
+            related: ddgData.RelatedTopics ? 
+              ddgData.RelatedTopics.slice(0, 3).map(topic => ({
+                text: topic.Text,
+                url: topic.FirstURL
+              })) : []
+          }
+        };
+      }
+      
+      // Check related topics
+      if (ddgData.RelatedTopics && ddgData.RelatedTopics.length > 0) {
+        const results = ddgData.RelatedTopics
+          .filter(topic => topic.FirstURL && topic.Text)
+          .slice(0, maxResults)
+          .map(topic => ({
+            title: topic.Text.split(' - ')[0] || topic.Text,
+            snippet: topic.Text,
+            url: topic.FirstURL,
+            source: 'DuckDuckGo'
+          }));
+        
+        if (results.length > 0) {
+          return {
+            success: true,
+            source: 'DuckDuckGo',
+            type: 'web_results',
+            query: query,
+            data: {
+              results: results,
+              total: results.length
+            }
+          };
+        }
+      }
+    }
+    
+    // Fallback: Try Wikipedia
+    const wikiResponse = await fetch(
+      `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(query)}`
+    );
+    
+    if (wikiResponse.ok) {
+      const wikiData = await wikiResponse.json();
+      
+      if (wikiData.extract) {
+        return {
+          success: true,
+          source: 'Wikipedia',
+          type: 'summary',
+          query: query,
+          data: {
+            summary: wikiData.extract,
+            title: wikiData.title,
+            url: wikiData.content_urls?.desktop?.page || `https://en.wikipedia.org/wiki/${encodeURIComponent(query)}`,
+            image: wikiData.thumbnail?.source,
+            fullUrl: wikiData.content_urls?.desktop?.page
+          }
+        };
+      }
+    }
+    
+    // If nothing found
+    return {
+      success: false,
+      message: 'No information found on the web.',
+      query: query
+    };
+    
+  } catch (error) {
+    console.error('Web search error:', error);
+    return {
+      success: false,
+      message: 'Search service is temporarily unavailable.',
+      error: error.message
+    };
+  }
+}
+
+async function getAIResponseWithWebSearch(userMessage, userId) {
+  try {
+    // First try web search for factual questions
+    const isQuestion = /^(who|what|when|where|why|how)\s+/i.test(userMessage) || 
+                      userMessage.includes('?');
+    
+    if (isQuestion) {
+      const searchResult = await webSearch(userMessage);
+      
+      if (searchResult.success) {
+        let context = '';
+        
+        if (searchResult.type === 'instant_answer' || searchResult.type === 'summary') {
+          context = `Here's information from ${searchResult.source}:\n\n${searchResult.data.summary}\n\n`;
+          if (searchResult.data.url) {
+            context += `Source: ${searchResult.data.url}\n\n`;
+          }
+        } else if (searchResult.type === 'web_results') {
+          context = `Here are web search results:\n\n`;
+          searchResult.data.results.forEach((result, index) => {
+            context += `${index + 1}. *${result.title}*\n`;
+            if (result.snippet) context += `   ${result.snippet}\n`;
+            if (result.url) context += `   ${result.url}\n\n`;
+          });
+        }
+        
+        // Combine web search with AI
+        const messages = [
+          { 
+            role: "system", 
+            content: `You are a helpful AI assistant. Use the web search results below to answer accurately. 
+            If the information is not in the search results, say so clearly. 
+            Always cite your sources when using web information.` 
+          },
+          { role: "user", content: context + `Based on this information, answer: ${userMessage}` }
+        ];
+        
+        const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${GROQ_API_KEY}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: "llama-3.1-8b-instant",
+            messages,
+            temperature: 0.7,
+            max_tokens: 500
+          })
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          const reply = data.choices[0].message.content;
+          
+          // Add to conversation history
+          const userData = getUserData(userId);
+          userData.messages.push({ role: "user", content: userMessage });
+          userData.messages.push({ role: "assistant", content: reply });
+          
+          // Keep only last 10 messages
+          if (userData.messages.length > 10) {
+            userData.messages = userData.messages.slice(-10);
+          }
+          
+          return reply;
+        }
+      }
+    }
+    
+    // Fallback to normal AI response
+    return await getAIResponse(userMessage, userId);
+    
+  } catch (error) {
+    console.error('AI with web search error:', error);
+    return await getAIResponse(userMessage, userId);
+  }
+}
+
+// ==================== AI CHATBOT WITH MEMORY ====================
+async function getAIResponse(userMessage, userId) {
+  const userData = getUserData(userId);
+  
+  // Add to conversation history
+  userData.messages.push({ role: "user", content: userMessage });
+  
+  // Keep only last 10 messages
+  if (userData.messages.length > 10) {
+    userData.messages = userData.messages.slice(-10);
+  }
+  
+  const messages = [
+    { 
+      role: "system", 
+      content: `You are a helpful AI assistant with conversation memory. 
+      You can also create quizzes, set reminders, and search the web.
+      
+      Available commands users can use:
+      - /search [query] - Search the web
+      - /quiz [topic] - Create a quiz
+      - /remind [time] [message] - Set reminder
+      - /myreminders - View reminders
+      - /mystats - View quiz stats
+      
+      Be friendly, helpful, and remember the conversation context.` 
+    },
+    ...userData.messages
+  ];
+  
+  try {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${GROQ_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-8b-instant",
+        messages,
+        temperature: 0.7,
+        max_tokens: 500
+      })
+    });
+    
+    const data = await response.json();
+    const reply = data.choices[0].message.content;
+    
+    // Add assistant response to history
+    userData.messages.push({ role: "assistant", content: reply });
+    
+    return reply;
+    
+  } catch (error) {
+    console.error('AI error:', error);
+    return "I'm having trouble connecting right now. Please try again!";
+  }
+}
+
+// ==================== QUIZ SYSTEM ====================
 async function generateQuiz(topic, difficulty = 'medium', questionCount = 5) {
   const difficultyPoints = {
     easy: 10,
@@ -47,15 +288,6 @@ async function generateQuiz(topic, difficulty = 'medium', questionCount = 5) {
   D) [Option 4]
   Correct: [A/B/C/D]
   Explanation: [Brief explanation]
-  
-  Example:
-  Q1: What is the capital of France?
-  A) London
-  B) Berlin
-  C) Paris
-  D) Madrid
-  Correct: C
-  Explanation: Paris is the capital and most populous city of France.
   
   Now create ${questionCount} questions about "${topic}". Make them educational and interesting.`;
   
@@ -93,17 +325,13 @@ async function generateQuiz(topic, difficulty = 'medium', questionCount = 5) {
           explanation: '',
           points: difficultyPoints[difficulty] || 15
         };
-      } else if (line.startsWith('A)')) {
-        currentQuestion.options.push(line.substring(3).trim());
-      } else if (line.startsWith('B)')) {
-        currentQuestion.options.push(line.substring(3).trim());
-      } else if (line.startsWith('C)')) {
-        currentQuestion.options.push(line.substring(3).trim());
-      } else if (line.startsWith('D)')) {
-        currentQuestion.options.push(line.substring(3).trim());
-      } else if (line.startsWith('Correct:')) {
+      } else if (line.startsWith('A)')) currentQuestion.options.push(line.substring(3).trim());
+      else if (line.startsWith('B)')) currentQuestion.options.push(line.substring(3).trim());
+      else if (line.startsWith('C)')) currentQuestion.options.push(line.substring(3).trim());
+      else if (line.startsWith('D)')) currentQuestion.options.push(line.substring(3).trim());
+      else if (line.startsWith('Correct:')) {
         const correctLetter = line.substring(8).trim();
-        currentQuestion.correct = correctLetter.charCodeAt(0) - 65; // A=0, B=1, C=2, D=3
+        currentQuestion.correct = correctLetter.charCodeAt(0) - 65;
       } else if (line.startsWith('Explanation:')) {
         currentQuestion.explanation = line.substring(12).trim();
       }
@@ -149,8 +377,8 @@ function sendQuizQuestion(ctx, quiz, userId) {
       Markup.button.callback(`D) ${question.options[3]}`, `quiz_${quiz.id}_3`)
     ],
     [
-      Markup.button.callback('⏭️ Skip Question', `quiz_${quiz.id}_skip`),
-      Markup.button.callback('❌ End Quiz', `quiz_${quiz.id}_end`)
+      Markup.button.callback('⏭️ Skip', `quiz_${quiz.id}_skip`),
+      Markup.button.callback('❌ End', `quiz_${quiz.id}_end`)
     ]
   ]);
   
@@ -180,7 +408,6 @@ function endQuiz(ctx, quiz, userId) {
     userData.stats.currentStreak = 0;
   }
   
-  // Calculate grade
   let grade = 'F';
   if (percentage >= 90) grade = 'A+';
   else if (percentage >= 80) grade = 'A';
@@ -188,29 +415,25 @@ function endQuiz(ctx, quiz, userId) {
   else if (percentage >= 60) grade = 'C';
   else if (percentage >= 50) grade = 'D';
   
-  // Results message
   let resultText = `🏁 *Quiz Completed!*\n\n`;
-  resultText += `📊 *Final Score:* ${quiz.score}/${quiz.questions.length} (${percentage}%)\n`;
+  resultText += `📊 *Score:* ${quiz.score}/${quiz.questions.length} (${percentage}%)\n`;
   resultText += `⭐ *Grade:* ${grade}\n`;
   resultText += `⏱️ *Time:* ${timeTaken} seconds\n`;
   resultText += `🎯 *Topic:* ${quiz.topic}\n`;
   resultText += `📈 *Difficulty:* ${quiz.difficulty}\n\n`;
   
-  // Add review of questions
-  resultText += `*Question Review:*\n`;
   quiz.questions.forEach((q, index) => {
     const userAnswer = quiz.answers[index];
     const correctLetter = String.fromCharCode(65 + q.correct);
     const userLetter = userAnswer ? String.fromCharCode(65 + userAnswer) : 'Skipped';
     const correctSymbol = userAnswer === q.correct ? '✅' : '❌';
-    
-    resultText += `${index + 1}. ${correctSymbol} You chose ${userLetter} (${correctLetter} was correct)\n`;
+    resultText += `${index + 1}. ${correctSymbol} You chose ${userLetter} (Correct: ${correctLetter})\n`;
   });
   
   resultText += `\n📚 *Want another quiz?* Use /quiz [topic]`;
   
   const statsKeyboard = Markup.inlineKeyboard([
-    [Markup.button.callback('📊 View My Stats', 'view_stats')],
+    [Markup.button.callback('📊 View Stats', 'view_stats')],
     [Markup.button.callback('🎯 New Quiz', 'new_quiz')]
   ]);
   
@@ -221,33 +444,23 @@ function endQuiz(ctx, quiz, userId) {
   });
 }
 
-// ==================== ADVANCED REMINDER SYSTEM ====================
+// ==================== REMINDER SYSTEM ====================
 function parseReminderTime(timeStr) {
   const now = Date.now();
   const timeUnits = {
-    'min': 60 * 1000,
-    'mins': 60 * 1000,
-    'h': 60 * 60 * 1000,
-    'hour': 60 * 60 * 1000,
-    'hours': 60 * 60 * 1000,
-    'd': 24 * 60 * 60 * 1000,
-    'day': 24 * 60 * 60 * 1000,
-    'days': 24 * 60 * 60 * 1000,
-    'week': 7 * 24 * 60 * 60 * 1000,
-    'weeks': 7 * 24 * 60 * 60 * 1000,
-    'month': 30 * 24 * 60 * 60 * 1000,
-    'months': 30 * 24 * 60 * 60 * 1000
+    'min': 60 * 1000, 'mins': 60 * 1000,
+    'h': 60 * 60 * 1000, 'hour': 60 * 60 * 1000, 'hours': 60 * 60 * 1000,
+    'd': 24 * 60 * 60 * 1000, 'day': 24 * 60 * 60 * 1000, 'days': 24 * 60 * 60 * 1000,
+    'week': 7 * 24 * 60 * 60 * 1000, 'weeks': 7 * 24 * 60 * 60 * 1000
   };
   
-  // Parse relative time
-  const match = timeStr.match(/(\d+)\s*(min|mins|h|hour|hours|d|day|days|week|weeks|month|months)/i);
+  const match = timeStr.match(/(\d+)\s*(min|mins|h|hour|hours|d|day|days|week|weeks)/i);
   if (match) {
     const value = parseInt(match[1]);
     const unit = match[2].toLowerCase();
     return value * timeUnits[unit];
   }
   
-  // Parse specific time
   const timeMatch = timeStr.match(/(\d{1,2}):(\d{2})\s*(am|pm)?/i);
   if (timeMatch) {
     let hours = parseInt(timeMatch[1]);
@@ -259,26 +472,12 @@ function parseReminderTime(timeStr) {
     
     const targetTime = new Date();
     targetTime.setHours(hours, minutes, 0, 0);
-    
-    if (targetTime.getTime() < now) {
-      targetTime.setDate(targetTime.getDate() + 1);
-    }
+    if (targetTime.getTime() < now) targetTime.setDate(targetTime.getDate() + 1);
     
     return targetTime.getTime() - now;
   }
   
-  // Parse date
-  const dateMatch = timeStr.match(/(\d{1,2})[-\/](\d{1,2})(?:[-\/](\d{4}))?/);
-  if (dateMatch) {
-    const day = parseInt(dateMatch[1]);
-    const month = parseInt(dateMatch[2]) - 1;
-    const year = dateMatch[3] ? parseInt(dateMatch[3]) : new Date().getFullYear();
-    
-    const targetDate = new Date(year, month, day, 9, 0, 0);
-    return targetDate.getTime() - now;
-  }
-  
-  return 30 * 60 * 1000; // Default 30 minutes
+  return 30 * 60 * 1000;
 }
 
 function addReminder(userId, time, message, chatId, repeat = false, repeatInterval = null) {
@@ -298,11 +497,9 @@ function addReminder(userId, time, message, chatId, repeat = false, repeatInterv
     timeoutId: null
   };
   
-  // Store reminder
   const userData = getUserData(userId);
   userData.reminders.push(reminder);
   
-  // Set timeout
   reminder.timeoutId = setTimeout(async () => {
     try {
       await bot.telegram.sendMessage(
@@ -311,7 +508,6 @@ function addReminder(userId, time, message, chatId, repeat = false, repeatInterv
         { parse_mode: 'Markdown' }
       );
       
-      // Handle repeating reminder
       if (reminder.repeat && reminder.active) {
         const newDelay = parseReminderTime(reminder.repeatInterval || '1d');
         reminder.triggerTime = new Date(Date.now() + newDelay);
@@ -319,7 +515,6 @@ function addReminder(userId, time, message, chatId, repeat = false, repeatInterv
           bot.telegram.sendMessage(chatId, `⏰ *REPEATING REMINDER*\n\n${message}`);
         }, newDelay);
       } else {
-        // Remove if not repeating
         const userData = getUserData(userId);
         const index = userData.reminders.findIndex(r => r.id === reminderId);
         if (index > -1) userData.reminders.splice(index, 1);
@@ -332,105 +527,132 @@ function addReminder(userId, time, message, chatId, repeat = false, repeatInterv
   return reminder;
 }
 
-// ==================== AI CHATBOT WITH MEMORY ====================
-async function getAIResponse(userMessage, userId, context = []) {
-  const userData = getUserData(userId);
-  
-  // Add to conversation history
-  userData.messages.push({ role: "user", content: userMessage });
-  
-  // Keep only last 10 messages
-  if (userData.messages.length > 10) {
-    userData.messages = userData.messages.slice(-10);
-  }
-  
-  const messages = [
-    { 
-      role: "system", 
-      content: `You are a helpful AI assistant with conversation memory. 
-      You can also create quizzes and set reminders.
-      
-      Available commands users can use:
-      - /quiz [topic] - Create a quiz
-      - /remind [time] [message] - Set reminder
-      - /myreminders - View reminders
-      - /mystats - View quiz stats
-      
-      Be friendly, helpful, and remember the conversation context.` 
-    },
-    ...userData.messages
-  ];
-  
-  try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${GROQ_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "llama-3.1-8b-instant",
-        messages,
-        temperature: 0.7,
-        max_tokens: 500
-      })
-    });
-    
-    const data = await response.json();
-    const reply = data.choices[0].message.content;
-    
-    // Add assistant response to history
-    userData.messages.push({ role: "assistant", content: reply });
-    
-    return reply;
-    
-  } catch (error) {
-    console.error('AI error:', error);
-    return "I'm having trouble connecting right now. Please try again!";
-  }
-}
-
 // ==================== BOT COMMANDS ====================
 
-// Start command
 bot.start((ctx) => {
   const welcomeText = `
-🤖 *Welcome to Ultimate AI Bot!* 🚀
+🤖 *Ultimate AI Assistant Bot* 🚀
 
-I'm your all-in-one assistant with:
+🔍 **NEW: Web Search**
+• /search [query] - Search the web
+• Get real-time information
+• Powered by DuckDuckGo & Wikipedia
 
-🎯 *Quiz System* (Like QuizBot)
-• Interactive quizzes with buttons
+🎯 **Quiz System** (Like QuizBot)
+• /quiz [topic] - Interactive quizzes
 • Multiple difficulties
-• Score tracking & statistics
-• Topic-based quiz generation
+• Score tracking
 
-⏰ *Advanced Reminders*
-• One-time & repeating reminders
+⏰ **Advanced Reminders**
+• /remind [time] [message]
+• Repeating reminders
 • Flexible time formats
-• Reminder management
-• Snooze functionality
 
-💬 *AI Chatbot with Memory*
-• Remembers conversation history
+💬 **AI Chat with Memory**
+• Remembers conversation
 • Context-aware responses
-• 24/7 availability
 • Powered by Groq AI
 
-📋 *Commands:*
-/start - Show this message
-/quiz [topic] - Create a quiz
-/remind [time] [message] - Set reminder
+📋 **Commands:**
+/search [query] - Web search
+/quiz [topic] - Create quiz
+/remind [time] [msg] - Set reminder
 /myreminders - View reminders
 /mystats - View quiz stats
 /help - Detailed help
 
-*Try me out!* Send any message or use commands.`;
+*Just send a message to chat!*`;
   
   ctx.reply(welcomeText, { parse_mode: 'Markdown' });
 });
 
-// Quiz command
+// ==================== SEARCH COMMAND ====================
+bot.command('search', async (ctx) => {
+  const query = ctx.message.text.replace('/search ', '').trim();
+  
+  if (!query) {
+    return ctx.reply(
+      `🔍 *Web Search Command*\n\n` +
+      `Usage: /search [your query]\n\n` +
+      `*Examples:*\n` +
+      `/search who is Elon Musk\n` +
+      `/search latest AI news\n` +
+      `/search weather in London\n` +
+      `/search python programming tutorial\n\n` +
+      `I'll search the web and provide accurate information!`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+  
+  await ctx.sendChatAction('typing');
+  
+  const searchResult = await webSearch(query);
+  
+  if (!searchResult.success) {
+    return ctx.reply(`❌ *No results found for:* "${query}"\n\nTry a different search query.`, { parse_mode: 'Markdown' });
+  }
+  
+  let response = `🔍 *Search Results for:* "${query}"\n`;
+  response += `🌐 *Source:* ${searchResult.source}\n\n`;
+  
+  if (searchResult.type === 'instant_answer' || searchResult.type === 'summary') {
+    response += `${searchResult.data.summary}\n\n`;
+    
+    if (searchResult.data.url) {
+      response += `📚 *Source:* ${searchResult.data.url}\n`;
+    }
+    
+    if (searchResult.data.image) {
+      try {
+        await ctx.replyWithPhoto(searchResult.data.image, {
+          caption: response,
+          parse_mode: 'Markdown'
+        });
+        return;
+      } catch (error) {
+        // If photo fails, send as text
+        response += `\n🖼️ [Image available at source]`;
+      }
+    }
+    
+    if (searchResult.data.related && searchResult.data.related.length > 0) {
+      response += `\n🔗 *Related:*\n`;
+      searchResult.data.related.forEach((link, index) => {
+        response += `${index + 1}. ${link.text}\n`;
+      });
+    }
+    
+  } else if (searchResult.type === 'web_results') {
+    searchResult.data.results.forEach((result, index) => {
+      response += `${index + 1}. *${result.title}*\n`;
+      if (result.snippet) response += `   ${result.snippet}\n`;
+      if (result.url) response += `   ${result.url}\n\n`;
+    });
+    
+    response += `📊 *Found ${searchResult.data.total} results*\n`;
+  }
+  
+  response += `\n💡 *Tip:* Ask follow-up questions for more details!`;
+  
+  // Split long messages
+  if (response.length > 4000) {
+    const parts = response.match(/[\s\S]{1,4000}/g);
+    for (let i = 0; i < parts.length; i++) {
+      await ctx.reply(parts[i], { 
+        parse_mode: 'Markdown',
+        disable_web_page_preview: i > 0
+      });
+      if (i < parts.length - 1) await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  } else {
+    await ctx.reply(response, { 
+      parse_mode: 'Markdown',
+      disable_web_page_preview: false
+    });
+  }
+});
+
+// ==================== QUIZ COMMAND ====================
 bot.command('quiz', async (ctx) => {
   const userId = ctx.from.id;
   const args = ctx.message.text.split(' ').slice(1);
@@ -442,24 +664,19 @@ bot.command('quiz', async (ctx) => {
       `*Examples:*\n` +
       `/quiz electricity\n` +
       `/quiz science easy\n` +
-      `/quiz history hard\n` +
-      `/quiz python programming medium\n\n` +
-      `*Difficulties:* easy, medium, hard\n` +
-      `*Default:* medium`,
+      `/quiz history hard\n\n` +
+      `*Difficulties:* easy, medium, hard`,
       { parse_mode: 'Markdown' }
     );
   }
   
-  // Check if already in a quiz
   if (activeQuizzes.has(userId)) {
-    return ctx.reply('⚠️ You already have an active quiz! Finish it first.');
+    return ctx.reply('⚠️ Finish your current quiz first!');
   }
   
-  // Parse arguments
   let topic = args[0];
   let difficulty = 'medium';
   
-  // Check if last arg is difficulty
   const lastArg = args[args.length - 1].toLowerCase();
   if (['easy', 'medium', 'hard'].includes(lastArg)) {
     difficulty = lastArg;
@@ -468,17 +685,168 @@ bot.command('quiz', async (ctx) => {
     topic = args.join(' ');
   }
   
-  ctx.reply(`🎯 *Creating ${difficulty} quiz about "${topic}"...*\n⏳ Please wait...`, { parse_mode: 'Markdown' });
+  ctx.reply(`🎯 *Creating ${difficulty} quiz about "${topic}"...*`, { parse_mode: 'Markdown' });
   
   const quiz = await generateQuiz(topic, difficulty);
   
   if (!quiz || quiz.questions.length === 0) {
-    return ctx.reply('❌ Failed to generate quiz. Please try a different topic!');
+    return ctx.reply('❌ Failed to generate quiz. Try a different topic!');
   }
   
   activeQuizzes.set(userId, quiz);
   sendQuizQuestion(ctx, quiz, userId);
 });
+
+// ==================== REMINDER COMMAND ====================
+bot.command('remind', (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
+  
+  if (args.length < 2) {
+    return ctx.reply(
+      `⏰ *Reminder System*\n\n` +
+      `Usage: /remind [time] [message]\n\n` +
+      `*Time Formats:*\n` +
+      `• 30min - In 30 minutes\n` +
+      `• 2h - In 2 hours\n` +
+      `• 1d - In 1 day\n` +
+      `• 14:30 - At 2:30 PM\n` +
+      `• tomorrow 9am - Tomorrow at 9 AM\n\n` +
+      `*Examples:*\n` +
+      `/remind 45min Take medicine\n` +
+      `/remind tomorrow 8am Meeting\n` +
+      `/remind 1d Call mom`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+  
+  const time = args[0];
+  const message = args.slice(1).join(' ');
+  
+  const reminder = addReminder(ctx.from.id, time, message, ctx.chat.id);
+  
+  ctx.reply(
+    `✅ *Reminder Set!*\n\n` +
+    `📝 *Task:* ${message}\n` +
+    `⏰ *Time:* ${reminder.triggerTime.toLocaleString()}\n` +
+    `🆔 *ID:* ${reminder.id}\n\n` +
+    `Use /myreminders to manage.`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+bot.command('myreminders', (ctx) => {
+  const userId = ctx.from.id;
+  const userData = getUserData(userId);
+  const reminders = userData.reminders;
+  
+  if (reminders.length === 0) {
+    return ctx.reply('📭 No active reminders.');
+  }
+  
+  let reminderList = `📋 *Your Reminders (${reminders.length})*\n\n`;
+  
+  reminders.forEach((reminder, index) => {
+    const repeatText = reminder.repeat ? '🔄 Repeating' : '⏰ One-time';
+    reminderList += `${index + 1}. *ID:* ${reminder.id}\n`;
+    reminderList += `   *Task:* ${reminder.message}\n`;
+    reminderList += `   *Time:* ${reminder.triggerTime.toLocaleString()}\n`;
+    reminderList += `   ${repeatText}\n\n`;
+  });
+  
+  reminderList += `*Manage:* /cancelreminder [ID]`;
+  
+  ctx.reply(reminderList, { parse_mode: 'Markdown' });
+});
+
+bot.command('cancelreminder', (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
+  
+  if (args.length === 0) {
+    return ctx.reply('Usage: /cancelreminder [ID]\nUse /myreminders to see IDs');
+  }
+  
+  const reminderId = parseInt(args[0]);
+  const userId = ctx.from.id;
+  const userData = getUserData(userId);
+  
+  const index = userData.reminders.findIndex(r => r.id === reminderId);
+  
+  if (index === -1) {
+    return ctx.reply('❌ Reminder not found!');
+  }
+  
+  const reminder = userData.reminders[index];
+  clearTimeout(reminder.timeoutId);
+  reminder.active = false;
+  userData.reminders.splice(index, 1);
+  
+  ctx.reply(`✅ Reminder #${reminderId} cancelled!`);
+});
+
+bot.command('mystats', (ctx) => {
+  const userId = ctx.from.id;
+  const userData = getUserData(userId);
+  const stats = userData.stats;
+  
+  const accuracy = stats.totalQuestions > 0 ? 
+    Math.round((stats.totalCorrect / stats.totalQuestions) * 100) : 0;
+  
+  const statsText = `
+📊 *Your Statistics*
+
+🎯 *Quizzes:*
+• Total Quizzes: ${stats.totalQuizzes}
+• Questions: ${stats.totalQuestions}
+• Correct: ${stats.totalCorrect}
+• Accuracy: ${accuracy}%
+• Streak: ${stats.currentStreak}
+• Best Streak: ${stats.bestStreak}
+
+💪 *Keep learning!*`;
+  
+  ctx.reply(statsText, { parse_mode: 'Markdown' });
+});
+
+bot.command('help', (ctx) => {
+  const helpText = `
+🆘 *Complete Help Guide*
+
+🔍 *WEB SEARCH:*
+/search [query] - Search web
+/search Elon Musk - Person info
+/search weather London - Weather
+/search latest news - News
+
+🎯 *QUIZ SYSTEM:*
+/quiz [topic] - Create quiz
+/quiz science - Science quiz
+/quiz history easy - Easy history
+/quiz math hard - Hard math
+/mystats - View stats
+
+⏰ *REMINDERS:*
+/remind [time] [message]
+/remind 30min Drink water
+/remind tomorrow 9am Meeting
+/myreminders - View all
+/cancelreminder [ID] - Cancel
+
+💬 *AI CHAT:*
+Just send any message!
+I remember last 10 messages
+Can answer any question
+
+❓ *Examples:*
+"Explain quantum physics"
+"/search who invented Python"
+"/quiz space exploration"
+"/remind 1h Take break"
+  `;
+  
+  ctx.reply(helpText, { parse_mode: 'Markdown' });
+});
+
+// ==================== HANDLERS ====================
 
 // Handle quiz answers
 bot.action(/quiz_(\d+)_/, async (ctx) => {
@@ -487,7 +855,7 @@ bot.action(/quiz_(\d+)_/, async (ctx) => {
   const quiz = activeQuizzes.get(userId);
   
   if (!quiz || quiz.id.toString() !== quizId) {
-    return ctx.answerCbQuery('This quiz is no longer active!');
+    return ctx.answerCbQuery('Quiz expired!');
   }
   
   if (action === 'skip') {
@@ -506,232 +874,24 @@ bot.action(/quiz_(\d+)_/, async (ctx) => {
     quiz.answers.push(answerIndex);
     quiz.currentQuestion++;
     
-    // Show feedback
     const correctLetter = String.fromCharCode(65 + quiz.questions[quiz.currentQuestion - 1].correct);
     const userLetter = String.fromCharCode(65 + answerIndex);
     
     ctx.answerCbQuery(
       isCorrect ? 
       `✅ Correct! +${quiz.questions[quiz.currentQuestion - 1].points} points` : 
-      `❌ Wrong! Correct answer was ${correctLetter}`
+      `❌ Wrong! Correct: ${correctLetter}`
     );
   }
   
-  // Check if quiz is complete
   if (quiz.currentQuestion >= quiz.questions.length) {
     endQuiz(ctx, quiz, userId);
   } else {
-    // Send next question
     sendQuizQuestion(ctx, quiz, userId);
   }
 });
 
-// Stats command
-bot.command('mystats', (ctx) => {
-  const userId = ctx.from.id;
-  const userData = getUserData(userId);
-  const stats = userData.stats;
-  
-  const accuracy = stats.totalQuestions > 0 ? 
-    Math.round((stats.totalCorrect / stats.totalQuestions) * 100) : 0;
-  
-  const statsText = `
-📊 *Your Quiz Statistics*
-
-🎯 *Performance:*
-• Total Quizzes: ${stats.totalQuizzes}
-• Questions Answered: ${stats.totalQuestions}
-• Correct Answers: ${stats.totalCorrect}
-• Accuracy: ${accuracy}%
-• Current Streak: ${stats.currentStreak}
-• Best Streak: ${stats.bestStreak}
-
-🏆 *Achievements:*
-${stats.totalQuizzes >= 10 ? '🎖️ Quiz Master (10+ quizzes)' : '🔒 Complete 10 quizzes'}
-${stats.bestStreak >= 5 ? '🔥 Hot Streak (5 in a row)' : '🔒 Get 5 correct in a row'}
-${accuracy >= 90 ? '⭐ Straight A Student (90%+)' : '🔒 Reach 90% accuracy'}
-
-📈 *Keep learning and improving!*`;
-  
-  ctx.reply(statsText, { parse_mode: 'Markdown' });
-});
-
-// Advanced Reminder command
-bot.command('remind', (ctx) => {
-  const args = ctx.message.text.split(' ').slice(1);
-  
-  if (args.length < 2) {
-    return ctx.reply(
-      `⏰ *Advanced Reminder System*\n\n` +
-      `Usage: /remind [time] [message]\n\n` +
-      `*Time Formats:*\n` +
-      `• 30min - In 30 minutes\n` +
-      `• 2h - In 2 hours\n` +
-      `• 1d - In 1 day\n` +
-      `• 14:30 - At 2:30 PM today/tomorrow\n` +
-      `• tomorrow 9am - Tomorrow at 9 AM\n` +
-      `• 15/12 - 15th December this year\n\n` +
-      `*Advanced Features:*\n` +
-      `/remind 1d "Workout" repeat - Repeats daily\n` +
-      `/remind 1h "Drink water" repeat 2h - Repeats every 2 hours\n\n` +
-      `*Examples:*\n` +
-      `/remind 45min Take medicine\n` +
-      `/remind tomorrow 8am Morning meeting\n` +
-      `/remind 1d "Call mom" repeat`,
-      { parse_mode: 'Markdown' }
-    );
-  }
-  
-  const time = args[0];
-  const hasRepeat = args.includes('repeat');
-  let repeatIndex = args.indexOf('repeat');
-  if (repeatIndex === -1) repeatIndex = args.length;
-  
-  const message = args.slice(1, repeatIndex).join(' ');
-  const repeatInterval = hasRepeat && args[repeatIndex + 1] ? args[repeatIndex + 1] : '1d';
-  
-  const reminder = addReminder(
-    ctx.from.id,
-    time,
-    message,
-    ctx.chat.id,
-    hasRepeat,
-    repeatInterval
-  );
-  
-  const repeatText = hasRepeat ? `(Repeats every ${repeatInterval})` : '';
-  
-  ctx.reply(
-    `✅ *Reminder Set!*\n\n` +
-    `📝 *Task:* ${message}\n` +
-    `⏰ *Time:* ${reminder.triggerTime.toLocaleString()}\n` +
-    `🆔 *ID:* ${reminder.id}\n` +
-    `${repeatText}\n\n` +
-    `Use /myreminders to manage reminders.`,
-    { parse_mode: 'Markdown' }
-  );
-});
-
-// View reminders
-bot.command('myreminders', (ctx) => {
-  const userId = ctx.from.id;
-  const userData = getUserData(userId);
-  const reminders = userData.reminders;
-  
-  if (reminders.length === 0) {
-    return ctx.reply('📭 You have no active reminders.');
-  }
-  
-  let reminderList = `📋 *Your Reminders (${reminders.length})*\n\n`;
-  
-  reminders.forEach((reminder, index) => {
-    const repeatText = reminder.repeat ? `🔄 Repeats every ${reminder.repeatInterval}` : '⏰ One-time';
-    reminderList += `${index + 1}. *ID:* ${reminder.id}\n`;
-    reminderList += `   *Task:* ${reminder.message}\n`;
-    reminderList += `   *Time:* ${reminder.triggerTime.toLocaleString()}\n`;
-    reminderList += `   ${repeatText}\n\n`;
-  });
-  
-  reminderList += `*Manage Reminders:*\n`;
-  reminderList += `/cancelreminder [ID] - Cancel a reminder\n`;
-  reminderList += `/snooze [ID] [time] - Snooze a reminder`;
-  
-  ctx.reply(reminderList, { parse_mode: 'Markdown' });
-});
-
-// Cancel reminder
-bot.command('cancelreminder', (ctx) => {
-  const args = ctx.message.text.split(' ').slice(1);
-  
-  if (args.length === 0) {
-    return ctx.reply('Please provide reminder ID: /cancelreminder [ID]\nUse /myreminders to see IDs');
-  }
-  
-  const reminderId = parseInt(args[0]);
-  const userId = ctx.from.id;
-  const userData = getUserData(userId);
-  
-  const index = userData.reminders.findIndex(r => r.id === reminderId);
-  
-  if (index === -1) {
-    return ctx.reply('❌ Reminder not found!');
-  }
-  
-  const reminder = userData.reminders[index];
-  clearTimeout(reminder.timeoutId);
-  reminder.active = false;
-  userData.reminders.splice(index, 1);
-  
-  ctx.reply(`✅ Reminder #${reminderId} cancelled successfully!`);
-});
-
-// Help command
-bot.help((ctx) => {
-  const helpText = `
-🆘 *Complete Help Guide*
-
-🎯 *QUIZ COMMANDS:*
-/quiz [topic] - Create interactive quiz
-/quiz [topic] [easy/medium/hard] - Quiz with difficulty
-/mystats - View your quiz statistics
-
-*Quiz Features:*
-• Interactive buttons (A, B, C, D)
-• Points based on difficulty
-• Score tracking
-• Question explanations
-• Skip/End options
-
-⏰ *REMINDER COMMANDS:*
-/remind [time] [message] - Set reminder
-/remind [time] [message] repeat - Repeat daily
-/remind [time] [message] repeat [interval] - Custom repeat
-/myreminders - View all reminders
-/cancelreminder [ID] - Cancel reminder
-
-*Time Examples:*
-• 30min, 2h, 1d, 1week
-• 14:30, 9:00am
-• tomorrow 8am
-• 25/12 (25th December)
-
-💬 *AI CHAT:*
-Just send any message for intelligent conversation!
-• Remembers last 10 messages
-• Context-aware responses
-• Can answer questions on any topic
-
-📊 *STATISTICS:*
-Track your quiz performance with /mystats
-
-❓ *Examples:*
-"Explain quantum computing"
-"/quiz space exploration"
-"/remind 1h Take a break"
-  `;
-  
-  ctx.reply(helpText, { parse_mode: 'Markdown' });
-});
-
-// Handle all text messages (AI Chat)
-bot.on('text', async (ctx) => {
-  const userId = ctx.from.id;
-  const message = ctx.message.text;
-  
-  // Skip if it's a command (handled above)
-  if (message.startsWith('/')) return;
-  
-  // Show typing indicator
-  await ctx.sendChatAction('typing');
-  
-  // Get AI response with memory
-  const response = await getAIResponse(message, userId);
-  
-  // Send response
-  await ctx.reply(response, { parse_mode: 'Markdown' });
-});
-
-// Handle callback queries
+// Handle inline buttons
 bot.action('view_stats', (ctx) => {
   const userId = ctx.from.id;
   const userData = getUserData(userId);
@@ -753,7 +913,7 @@ bot.action('view_stats', (ctx) => {
     parse_mode: 'Markdown',
     ...Markup.inlineKeyboard([
       [Markup.button.callback('🎯 New Quiz', 'new_quiz')],
-      [Markup.button.callback('🏠 Main Menu', 'main_menu')]
+      [Markup.button.callback('🔍 Search', 'do_search')]
     ])
   });
 });
@@ -770,60 +930,47 @@ bot.action('new_quiz', (ctx) => {
   );
 });
 
-bot.action('main_menu', (ctx) => {
+bot.action('do_search', (ctx) => {
   ctx.editMessageText(
-    `🏠 *Main Menu*\n\n` +
-    `Choose an option:`,
-    {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('🎯 New Quiz', 'new_quiz')],
-        [Markup.button.callback('⏰ Set Reminder', 'set_reminder')],
-        [Markup.button.callback('📊 My Stats', 'view_stats')],
-        [Markup.button.callback('🆘 Help', 'show_help')]
-      ])
-    }
-  );
-});
-
-bot.action('set_reminder', (ctx) => {
-  ctx.editMessageText(
-    `⏰ *Set Reminder*\n\n` +
-    `Send: /remind [time] [message]\n\n` +
+    `🔍 *Web Search*\n\n` +
+    `Send: /search [query]\n\n` +
     `*Examples:*\n` +
-    `/remind 30min Take medicine\n` +
-    `/remind tomorrow 9am Meeting\n` +
-    `/remind 1d "Call friend" repeat`,
+    `/search Elon Musk\n` +
+    `/search latest AI news\n` +
+    `/search weather in Tokyo`,
     { parse_mode: 'Markdown' }
   );
 });
 
-bot.action('show_help', (ctx) => {
-  ctx.editMessageText(
-    `🆘 *Quick Help*\n\n` +
-    `*Main Commands:*\n` +
-    `/quiz - Create interactive quiz\n` +
-    `/remind - Set advanced reminder\n` +
-    `/myreminders - View reminders\n` +
-    `/mystats - View quiz stats\n` +
-    `/help - Detailed help guide\n\n` +
-    `*Just chat normally for AI conversation!*`,
-    { parse_mode: 'Markdown' }
-  );
+// Handle all text messages (AI Chat with Web Search)
+bot.on('text', async (ctx) => {
+  const userId = ctx.from.id;
+  const message = ctx.message.text;
+  
+  // Skip if it's a command
+  if (message.startsWith('/')) return;
+  // Skip if it's a quiz answer
+  if (/^[A-Da-d]$/.test(message)) return;
+  
+  await ctx.sendChatAction('typing');
+  
+  // Get AI response with web search for questions
+  const response = await getAIResponseWithWebSearch(message, userId);
+  
+  await ctx.reply(response, { parse_mode: 'Markdown' });
 });
 
 // Export for Vercel
 export default async function handler(req, res) {
-  console.log('Request received:', req.method);
+  console.log('Request:', req.method);
   
-  // Health check
   if (req.method === 'GET') {
     return res.status(200).json({
       status: 'online',
-      bot: 'Ultimate AI Bot',
-      features: ['quiz', 'reminders', 'ai-chat'],
+      bot: 'Ultimate AI Assistant',
+      features: ['web-search', 'quiz', 'reminders', 'ai-chat'],
       stats: {
-        activeUsers: userSessions.size,
+        users: userSessions.size,
         activeQuizzes: activeQuizzes.size,
         totalReminders: Array.from(userSessions.values())
           .reduce((sum, user) => sum + user.reminders.length, 0)
@@ -831,7 +978,6 @@ export default async function handler(req, res) {
     });
   }
   
-  // Handle Telegram webhook
   if (req.method === 'POST') {
     try {
       await bot.handleUpdate(req.body);
@@ -845,4 +991,4 @@ export default async function handler(req, res) {
   return res.status(405).json({ error: 'Method not allowed' });
 }
 
-console.log('🤖 Ultimate Bot with Quiz, Reminders & AI Chat loaded!');
+console.log('🤖 Ultimate Bot with Web Search loaded!');
