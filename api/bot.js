@@ -1,7 +1,7 @@
 import { Telegraf } from 'telegraf';
 import fetch from 'node-fetch';
 
-// Telegram Bot Token (HARDCODED - REPLACE WITH YOUR TOKEN)
+// Your Telegram Bot Token
 const BOT_TOKEN = "8559167003:AAGg0sWPEoFyLWKg9BBfcLzJCoNA1hi1Sus";
 
 // Initialize bot
@@ -14,7 +14,7 @@ async function getGroqResponse(message) {
     
     if (!GROQ_API_KEY) {
       console.error("Groq API key not found in environment");
-      return "⚠️ API configuration error. Please check server setup.";
+      return "⚠️ Groq API key is not configured. Please add GROQ_API_KEY in Vercel environment variables.";
     }
 
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -28,42 +28,43 @@ async function getGroqResponse(message) {
         messages: [
           { 
             role: "system", 
-            content: "You are a helpful AI assistant. Keep responses concise, friendly, and informative." 
+            content: "You are a helpful AI assistant. Keep responses concise, friendly, and informative. Use markdown formatting when helpful." 
           },
           { role: "user", content: message }
         ],
         temperature: 0.7,
-        max_tokens: 800
+        max_tokens: 1000
       })
     });
 
     if (!response.ok) {
-      console.error(`Groq API error: ${response.status} - ${await response.text()}`);
-      return "🤖 I'm having trouble connecting to my AI brain. Please try again in a moment.";
+      console.error(`Groq API error: ${response.status}`);
+      return "🤖 I'm having trouble connecting to my AI brain right now. Please try again in a moment.";
     }
 
     const data = await response.json();
     return data.choices[0].message.content.trim();
     
   } catch (error) {
-    console.error("Groq API Error:", error);
-    return "🚫 Sorry, I encountered an error while processing your request. Please try again.";
+    console.error("Groq API Error:", error.message);
+    return "🚫 Sorry, I encountered an error. Please try your request again.";
   }
 }
 
 // Handle /start command
 bot.start((ctx) => {
   ctx.reply(
-    "🤖 *Welcome to DeepSeek AI Bot!*\n\n" +
-    "I'm powered by Groq's AI technology.\n\n" +
-    "*How to use:*\n" +
-    "• Just send me any message\n" +
-    "• I'll respond using AI\n\n" +
-    "*Commands:*\n" +
-    "/start - Show this welcome message\n" +
-    "/help - Get help information\n" +
+    "🤖 *AI Assistant Bot*\n\n" +
+    "Hello! I'm an AI assistant powered by Groq's Llama 3.1.\n\n" +
+    "*Available Commands:*\n" +
+    "/start - Show this message\n" +
+    "/help - How to use the bot\n" +
     "/about - About this bot\n\n" +
-    "Start by asking me anything! 💬",
+    "Just send me any message and I'll respond!\n\n" +
+    "Try asking me:\n" +
+    "• *What is AI?*\n" +
+    "• *Tell me a joke*\n" +
+    "• *Explain quantum computing*",
     { parse_mode: 'Markdown' }
   );
 });
@@ -71,18 +72,17 @@ bot.start((ctx) => {
 // Handle /help command
 bot.help((ctx) => {
   ctx.reply(
-    "💡 *Help Guide*\n\n" +
-    "*What I can do:*\n" +
-    "• Answer questions\n" +
-    "• Explain concepts\n" +
-    "• Help with problem-solving\n" +
-    "• Generate creative content\n\n" +
+    "💡 *How to use this bot:*\n\n" +
+    "1. Simply type your question or message\n" +
+    "2. I'll respond using AI\n" +
+    "3. That's it!\n\n" +
     "*Examples:*\n" +
-    "• 'What is machine learning?'\n" +
-    "• 'Explain quantum physics simply'\n" +
-    "• 'Write a short poem about AI'\n" +
-    "• 'Help me solve this math problem...'\n\n" +
-    "Just type your question and press send! 🚀",
+    "• Technology questions\n" +
+    "• Study help\n" +
+    "• Creative writing\n" +
+    "• Problem solving\n" +
+    "• General knowledge\n\n" +
+    "I can help with almost anything! 🚀",
     { parse_mode: 'Markdown' }
   );
 });
@@ -90,15 +90,16 @@ bot.help((ctx) => {
 // Handle /about command
 bot.command('about', (ctx) => {
   ctx.reply(
-    "🤖 *DeepSeek AI Bot*\n\n" +
-    "*Powered by:*\n" +
-    "• Groq API\n" +
-    "• Llama 3.1 8B Instant\n\n" +
-    "*Features:*\n" +
-    "• Fast AI responses\n" +
-    "• Conversational interface\n" +
-    "• No message history stored\n\n" +
-    "This bot processes requests in real-time using cloud AI services.",
+    "🤖 *About This Bot*\n\n" +
+    "*Technology Stack:*\n" +
+    "• Backend: Vercel Serverless Functions\n" +
+    "• AI Engine: Groq Cloud\n" +
+    "• Model: Llama 3.1 8B Instant\n\n" +
+    "*Privacy:*\n" +
+    "• No conversation history stored\n" +
+    "• Messages processed in real-time\n" +
+    "• No personal data saved\n\n" +
+    "Built with ❤️ using modern AI technology.",
     { parse_mode: 'Markdown' }
   );
 });
@@ -106,11 +107,14 @@ bot.command('about', (ctx) => {
 // Handle all text messages
 bot.on('text', async (ctx) => {
   const userMessage = ctx.message.text;
+  const chatId = ctx.chat.id;
   
-  // Ignore commands that have been handled
+  // Skip if it's a command
   if (userMessage.startsWith('/')) {
     return;
   }
+  
+  console.log(`Received message from ${chatId}: ${userMessage.substring(0, 50)}...`);
   
   try {
     // Show typing indicator
@@ -119,32 +123,53 @@ bot.on('text', async (ctx) => {
     // Get AI response
     const reply = await getGroqResponse(userMessage);
     
-    // Send response
-    await ctx.reply(reply, { parse_mode: 'Markdown' });
+    console.log(`Sending response to ${chatId} (length: ${reply.length})`);
+    
+    // Send response (split if too long for Telegram)
+    if (reply.length > 4000) {
+      const chunks = reply.match(/[\s\S]{1,4000}/g);
+      for (let i = 0; i < chunks.length; i++) {
+        await ctx.reply(chunks[i], { 
+          parse_mode: 'Markdown',
+          disable_web_page_preview: true 
+        });
+        if (i < chunks.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
+    } else {
+      await ctx.reply(reply, { 
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true 
+      });
+    }
     
   } catch (error) {
     console.error("Message handling error:", error);
-    ctx.reply("❌ Sorry, something went wrong while processing your message. Please try again.");
+    try {
+      await ctx.reply("❌ Sorry, something went wrong. Please try your request again.");
+    } catch (e) {
+      console.error("Failed to send error message:", e);
+    }
   }
 });
 
 // Handle errors
 bot.catch((err, ctx) => {
-  console.error(`Error for ${ctx.updateType}:`, err);
-  ctx.reply("⚠️ An unexpected error occurred. Please try your request again.");
+  console.error(`Bot error for update ${ctx.updateType}:`, err);
 });
-
-// Start bot polling (for development)
-if (process.env.NODE_ENV === 'development') {
-  bot.launch().then(() => {
-    console.log('🤖 Telegram bot is running in development mode!');
-  });
-}
 
 // Export for Vercel
 export default async function handler(req, res) {
-  // For Vercel deployment, we'll use webhooks
-  // You need to set webhook: https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=https://your-vercel-url.vercel.app/api/bot
+  // Set CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  
+  // Handle preflight
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
   
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -152,16 +177,14 @@ export default async function handler(req, res) {
   
   try {
     // Process Telegram update
+    console.log('Received webhook request');
     await bot.handleUpdate(req.body);
     return res.status(200).json({ ok: true });
   } catch (error) {
     console.error('Webhook error:', error);
-    return res.status(500).json({ error: 'Internal server error' });
+    return res.status(500).json({ 
+      error: 'Internal server error',
+      message: error.message 
+    });
   }
 }
-
-// Enable graceful stop
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
-
-console.log('🤖 DeepSeek Bot initialized!');
