@@ -1,22 +1,30 @@
 import { Telegraf } from 'telegraf';
 
-// Your Telegram Bot Token
-const BOT_TOKEN = "8559167003:AAGg0sWPEoFyLWKg9BBfcLzJCoNA1hi1Sus";
+// Get credentials from environment variables
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+
+// Check if environment variables are set
+if (!BOT_TOKEN) {
+  console.error('❌ ERROR: BOT_TOKEN environment variable is not set');
+  throw new Error('BOT_TOKEN is required');
+}
+
+if (!GROQ_API_KEY) {
+  console.error('❌ ERROR: GROQ_API_KEY environment variable is not set');
+  throw new Error('GROQ_API_KEY is required');
+}
+
+console.log('✅ Environment variables loaded');
+console.log('🤖 Bot initializing with Groq API...');
 
 // Initialize bot
 const bot = new Telegraf(BOT_TOKEN);
 
-// Groq API function
-async function getGroqResponse(message) {
+// Function to call Groq API
+async function getGroqResponse(userMessage) {
   try {
-    const GROQ_API_KEY = process.env.GROQ_API_KEY;
-    
-    if (!GROQ_API_KEY) {
-      console.error("❌ ERROR: Groq API key not found in environment");
-      return "⚠️ Bot is still setting up. Please wait a moment and try again.";
-    }
-
-    console.log(`🤖 Sending to Groq: "${message.substring(0, 50)}..."`);
+    console.log('🤖 Calling Groq API...');
     
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -29,139 +37,95 @@ async function getGroqResponse(message) {
         messages: [
           { 
             role: "system", 
-            content: "You are a helpful AI assistant. Keep responses concise, friendly, and informative." 
+            content: "You are a helpful AI assistant. Be concise, friendly, and helpful." 
           },
-          { role: "user", content: message }
+          { role: "user", content: userMessage }
         ],
         temperature: 0.7,
         max_tokens: 500
       })
     });
 
-    console.log(`📡 Groq response status: ${response.status}`);
-    
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`❌ Groq API error ${response.status}:`, errorText);
-      return "🤖 I'm having technical difficulties. Please try again in a moment.";
+      const error = await response.text();
+      console.error('❌ Groq API error:', response.status, error);
+      throw new Error(`Groq API error: ${response.status}`);
     }
 
     const data = await response.json();
-    const reply = data.choices[0].message.content.trim();
-    
-    console.log(`✅ Got reply (${reply.length} chars)`);
-    return reply;
+    console.log('✅ Groq response received');
+    return data.choices[0].message.content;
     
   } catch (error) {
-    console.error("❌ Groq API Error:", error.message);
-    return "🚫 Sorry, I encountered an error. Please try again.";
+    console.error('❌ Error calling Groq:', error.message);
+    return "I'm having trouble connecting to the AI service. Please try again.";
   }
 }
 
+// Handle text messages
+bot.on('text', async (ctx) => {
+  const userMessage = ctx.message.text;
+  const chatId = ctx.chat.id;
+  
+  console.log(`📱 Message from ${chatId}: "${userMessage}"`);
+  
+  // Skip commands
+  if (userMessage.startsWith('/')) return;
+  
+  try {
+    // Show typing indicator
+    await ctx.sendChatAction('typing');
+    
+    // Get response from Groq
+    const reply = await getGroqResponse(userMessage);
+    
+    console.log(`✅ Sending reply to ${chatId}`);
+    
+    // Send the response
+    await ctx.reply(reply, { parse_mode: 'Markdown' });
+    
+  } catch (error) {
+    console.error('❌ Error:', error);
+    await ctx.reply("Sorry, I encountered an error. Please try again.");
+  }
+});
+
 // Handle /start command
 bot.start((ctx) => {
-  console.log(`📱 /start command from ${ctx.chat.id}`);
+  console.log('🚀 /start command received');
   ctx.reply(
-    "🤖 *AI Assistant Bot*\n\n" +
-    "Hello! I'm back online and ready to help!\n\n" +
-    "Just send me any message and I'll respond using AI.\n\n" +
-    "Try asking:\n" +
-    "• What is AI?\n" +
-    "• Tell me a joke\n" +
-    "• Explain something\n\n" +
-    "I'm powered by Groq's fast AI technology!",
+    `🤖 *AI Assistant Bot*\n\n` +
+    `I'm powered by Groq's AI technology!\n\n` +
+    `*Commands:*\n` +
+    `/start - Show this message\n` +
+    `/help - How to use the bot\n\n` +
+    `Just send me any message and I'll respond!`,
     { parse_mode: 'Markdown' }
   );
 });
 
 // Handle /help command
 bot.help((ctx) => {
-  console.log(`📱 /help command from ${ctx.chat.id}`);
   ctx.reply(
-    "💡 *How to use:*\n\n" +
-    "Just type any question or message and send it!\n\n" +
-    "*Examples:*\n" +
-    "• Technology questions\n" +
-    "• Study help\n" +
-    "• Creative writing\n" +
-    "• General knowledge\n\n" +
-    "That's it! Simple and easy. 🚀",
+    `💡 *How to use:*\n\n` +
+    `1. Type your question or message\n` +
+    `2. I'll respond using AI\n` +
+    `3. That's it!\n\n` +
+    `*Examples:*\n` +
+    `• What is machine learning?\n` +
+    `• Write a short poem\n` +
+    `• Explain quantum computing\n` +
+    `• Help with homework`,
     { parse_mode: 'Markdown' }
   );
 });
-
-// Handle /status command
-bot.command('status', (ctx) => {
-  console.log(`📱 /status command from ${ctx.chat.id}`);
-  const hasApiKey = !!process.env.GROQ_API_KEY;
-  ctx.reply(
-    `🤖 *Bot Status*\n\n` +
-    `• *Online:* ✅ Yes\n` +
-    `• *API Key:* ${hasApiKey ? '✅ Configured' : '❌ Missing'}\n` +
-    `• *Messages:* Working\n` +
-    `• *Powered by:* Groq AI\n\n` +
-    `Bot is ${hasApiKey ? 'fully operational' : 'missing API key'}`,
-    { parse_mode: 'Markdown' }
-  );
-});
-
-// Handle all text messages
-bot.on('text', async (ctx) => {
-  const userMessage = ctx.message.text;
-  const chatId = ctx.chat.id;
-  const userId = ctx.from.id;
-  
-  console.log(`📱 Message from ${userId} in ${chatId}: "${userMessage}"`);
-  
-  // Skip if it's a command
-  if (userMessage.startsWith('/')) {
-    return;
-  }
-  
-  try {
-    // Show typing indicator
-    await ctx.sendChatAction('typing');
-    
-    // Get AI response
-    const reply = await getGroqResponse(userMessage);
-    
-    // Send response
-    await ctx.reply(reply);
-    
-    console.log(`✅ Successfully replied to ${userId}`);
-    
-  } catch (error) {
-    console.error("❌ Error handling message:", error);
-    try {
-      await ctx.reply("❌ Sorry, something went wrong. The developer has been notified.");
-    } catch (e) {
-      console.error("❌ Failed to send error message:", e);
-    }
-  }
-});
-
-// Handle errors
-bot.catch((err, ctx) => {
-  console.error(`❌ Bot error:`, err);
-});
-
-// Health check endpoint
-bot.telegram.setWebhook = async (url) => {
-  console.log(`🔗 Setting webhook to: ${url}`);
-  try {
-    const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/setWebhook?url=${url}`);
-    const data = await response.json();
-    console.log('✅ Webhook set:', data);
-    return data;
-  } catch (error) {
-    console.error('❌ Failed to set webhook:', error);
-    throw error;
-  }
-};
 
 // Export for Vercel
 export default async function handler(req, res) {
-  console.log(`🌐 ${req.method} request received`);
+  console.log('\n=== REQUEST ===');
+  console.log('Method:', req.method);
+  console.log('Path:', req.url);
+  console.log('Time:', new Date().toISOString());
   
   // Set CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -170,44 +134,54 @@ export default async function handler(req, res) {
   
   // Handle preflight
   if (req.method === 'OPTIONS') {
-    console.log('🔄 Handling OPTIONS preflight');
     return res.status(200).end();
   }
   
-  // Health check endpoint
+  // Health check
   if (req.method === 'GET') {
-    console.log('🔍 Health check requested');
-    return res.status(200).json({ 
+    console.log('✅ Health check');
+    const hasBotToken = !!BOT_TOKEN;
+    const hasGroqKey = !!GROQ_API_KEY;
+    
+    return res.status(200).json({
       status: 'online',
       bot: 'Telegram Groq Bot',
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      config: {
+        bot_token_configured: hasBotToken,
+        groq_key_configured: hasGroqKey,
+        environment: process.env.NODE_ENV || 'production'
+      },
+      endpoint: '/api/bot.js',
+      webhook_url: 'https://samaiapi.vercel.app/api/bot.js'
     });
   }
   
-  if (req.method !== 'POST') {
-    console.log('❌ Method not allowed:', req.method);
-    return res.status(405).json({ error: 'Method not allowed' });
+  // Handle Telegram webhook
+  if (req.method === 'POST') {
+    console.log('📦 Telegram webhook received');
+    
+    try {
+      // Log the incoming update
+      console.log('Update:', JSON.stringify(req.body, null, 2));
+      
+      // Process the update
+      await bot.handleUpdate(req.body);
+      
+      console.log('✅ Webhook processed');
+      return res.status(200).json({ ok: true });
+      
+    } catch (error) {
+      console.error('❌ Webhook error:', error);
+      return res.status(500).json({ 
+        ok: false, 
+        error: error.message 
+      });
+    }
   }
   
-  try {
-    // Log the request
-    console.log('📦 Webhook body:', JSON.stringify(req.body, null, 2));
-    
-    // Process Telegram update
-    await bot.handleUpdate(req.body);
-    
-    console.log('✅ Webhook processed successfully');
-    return res.status(200).json({ ok: true });
-    
-  } catch (error) {
-    console.error('❌ Webhook error:', error);
-    return res.status(500).json({ 
-      ok: false,
-      error: error.message,
-      stack: error.stack
-    });
-  }
+  // Method not allowed
+  return res.status(405).json({ error: 'Method not allowed' });
 }
 
-// Log startup
-console.log('🤖 Bot initialized with token:', BOT_TOKEN.substring(0, 10) + '...');
+console.log('✅ Bot setup complete');
