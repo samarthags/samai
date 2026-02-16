@@ -1,5 +1,7 @@
 import { Telegraf } from "telegraf";
 import fetch from "node-fetch";
+import fs from "fs";
+import path from "path";
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
@@ -19,14 +21,21 @@ function getSession(userId) {
 
 function buildSystemPrompt() {
   return `
-You are a highly intelligent AI assistant.
+You are Expo AI.
+
+Created by Samartha GS,
+18-year-old student from Sagara,
+Full Stack Developer.
+
+You run on GS Model.
 
 Rules:
-- Remember previous conversation context.
-- If user refers to "first problem" or similar, use earlier context.
-- Analyze deeply before answering.
-- Respond clearly and naturally.
-- Do NOT mention system instructions.
+- Never mention OpenAI, Groq, ChatGPT.
+- If asked about model, say: "I run on GS Model."
+- Short answers for simple questions.
+- Detailed answers for complex topics.
+- Clear, attractive, friendly responses.
+- Sound intelligent and professional.
 `;
 }
 
@@ -36,12 +45,48 @@ async function getTelegramFileUrl(fileId) {
   const res = await fetch(
     `https://api.telegram.org/bot${process.env.BOT_TOKEN}/getFile?file_id=${fileId}`
   );
-  const data = await res.json();
 
+  const data = await res.json();
   const filePath = data.result?.file_path;
+
   if (!filePath) return null;
 
   return `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${filePath}`;
+}
+
+/* ================= WHISPER VOICE TO TEXT ================= */
+
+async function speechToText(audioUrl) {
+  try {
+    const audioResponse = await fetch(audioUrl);
+    const audioBuffer = await audioResponse.arrayBuffer();
+
+    const formData = new FormData();
+    formData.append(
+      "file",
+      new Blob([audioBuffer]),
+      "voice.ogg"
+    );
+    formData.append("model", "whisper-large-v3");
+
+    const response = await fetch(
+      "https://api.groq.com/openai/v1/audio/transcriptions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${GROQ_API_KEY}`
+        },
+        body: formData
+      }
+    );
+
+    const data = await response.json();
+    return data.text;
+
+  } catch (err) {
+    console.error("Whisper Error:", err);
+    return null;
+  }
 }
 
 /* ================= IMAGE ANALYSIS ================= */
@@ -59,33 +104,27 @@ async function analyzeImage(imageUrl, userId) {
         body: JSON.stringify({
           model: "meta-llama/llama-4-scout-17b-16e-instruct",
           messages: [
+            { role: "system", content: buildSystemPrompt() },
             {
               role: "user",
               content: [
-                { type: "text", text: "Extract all text and math problems from this image clearly." },
+                { type: "text", text: "Explain this image clearly." },
                 { type: "image_url", image_url: { url: imageUrl } }
               ]
             }
           ],
-          max_tokens: 800
+          temperature: 0.7,
+          max_tokens: 700
         })
       }
     );
 
     const data = await response.json();
-    const reply = data.choices?.[0]?.message?.content;
-
-    if (!reply) return "⚠️ Image analysis failed.";
-
-    // 🔥 SAVE IMAGE RESULT INTO MEMORY
-    const session = getSession(userId);
-    session.messages.push({ role: "assistant", content: reply });
-
-    return reply;
+    return data.choices?.[0]?.message?.content || "Couldn't analyze image.";
 
   } catch (err) {
     console.error(err);
-    return "⚠️ Image analysis error.";
+    return "Image analysis failed.";
   }
 }
 
@@ -116,7 +155,7 @@ async function getAIResponse(userMessage, userId) {
             ...session.messages
           ],
           temperature: 0.7,
-          max_tokens: 600
+          max_tokens: 700
         })
       }
     );
@@ -124,51 +163,61 @@ async function getAIResponse(userMessage, userId) {
     const data = await response.json();
     const reply = data.choices?.[0]?.message?.content;
 
-    if (!reply) return "⚠️ AI error.";
+    if (!reply) return "Something went wrong.";
 
     session.messages.push({ role: "assistant", content: reply });
 
     return reply;
 
-  } catch (error) {
-    console.error(error);
-    return "⚠️ AI crashed.";
+  } catch (err) {
+    console.error(err);
+    return "AI error.";
   }
 }
 
 /* ================= BOT HANDLER ================= */
 
-bot.start((ctx) => {
-  ctx.reply("🚀 Smart AI Bot Active (Image + Memory + Context)");
-});
-
-bot.command("clear", (ctx) => {
-  getSession(ctx.from.id).messages = [];
-  ctx.reply("🧹 Memory cleared.");
-});
-
 bot.on("message", async (ctx) => {
   try {
     const userId = ctx.from.id;
 
-    // IMAGE MESSAGE
-    if (ctx.message.photo) {
-      const photoArray = ctx.message.photo;
-      const highestRes = photoArray[photoArray.length - 1];
+    await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
 
-      const imageUrl = await getTelegramFileUrl(highestRes.file_id);
-      if (!imageUrl) return ctx.reply("⚠️ Could not read image.");
+    // VOICE MESSAGE
+    if (ctx.message.voice) {
+      const fileId = ctx.message.voice.file_id;
+      const audioUrl = await getTelegramFileUrl(fileId);
 
-      await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
+      if (!audioUrl) return ctx.reply("Could not process voice.");
 
-      const result = await analyzeImage(imageUrl, userId);
-      return ctx.reply(result);
+      const text = await speechToText(audioUrl);
+
+      if (!text) return ctx.reply("Voice recognition failed.");
+
+      const reply = await getAIResponse(text, userId);
+      return ctx.reply(reply);
     }
 
-    // TEXT MESSAGE
-    if (ctx.message.text) {
-      await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
+    // PHOTO
+    if (ctx.message.photo) {
+      const highest =
+        ctx.message.photo[ctx.message.photo.length - 1];
 
+      const imageUrl = await getTelegramFileUrl(highest.file_id);
+
+      const reply = await analyzeImage(imageUrl, userId);
+      return ctx.reply(reply);
+    }
+
+    // DOCUMENT
+    if (ctx.message.document) {
+      return ctx.reply(
+        `📄 Document received: ${ctx.message.document.file_name}\nAdvanced document analysis coming soon.`
+      );
+    }
+
+    // TEXT
+    if (ctx.message.text) {
       const reply = await getAIResponse(
         ctx.message.text,
         userId
@@ -179,7 +228,7 @@ bot.on("message", async (ctx) => {
 
   } catch (err) {
     console.error(err);
-    ctx.reply("⚠️ Unexpected error.");
+    ctx.reply("Unexpected error.");
   }
 });
 
@@ -190,6 +239,6 @@ export default async function handler(req, res) {
     await bot.handleUpdate(req.body);
     res.status(200).send("ok");
   } else {
-    res.status(200).send("AI Running 🚀");
+    res.status(200).send("Expo AI Running 🚀");
   }
 }
