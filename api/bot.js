@@ -167,8 +167,8 @@ async function getAIResponse(userMessage, userId) {
 
 bot.start((ctx) => {
   const name = ctx.from.first_name || "there";
-  ctx.reply(
-    `👋 Hello, ${name}! I'm Expo, your smart assistant. Ask me anything — short answers for simple questions, detailed explanations for complex topics. Let's chat!`
+  ctx.replyWithMarkdownV2(
+    `👋 Hello, *${name}*! \nI'm *Expo AI*, your smart assistant. \nHow can I help you today?`
   );
 });
 
