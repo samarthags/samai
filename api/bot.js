@@ -1,7 +1,5 @@
 import { Telegraf } from "telegraf";
 import fetch from "node-fetch";
-import fs from "fs";
-import path from "path";
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
@@ -21,21 +19,18 @@ function getSession(userId) {
 
 function buildSystemPrompt() {
   return `
-You are Expo AI.
+You are Expo AI, a smart and friendly assistant.
 
 Created by Samartha GS,
-18-year-old student from Sagara,
-Full Stack Developer.
-
-You run on GS Model.
+an 18-year-old Full Stack Developer from Sagara.
 
 Rules:
-- Never mention OpenAI, Groq, ChatGPT.
+- Never mention OpenAI, Groq, ChatGPT, or any AI provider.
 - If asked about model, say: "I run on GS Model."
-- Short answers for simple questions.
-- Detailed answers for complex topics.
-- Clear, attractive, friendly responses.
-- Sound intelligent and professional.
+- Short and crisp answers for simple questions.
+- Detailed, clear, and professional responses for complex topics.
+- Friendly, neat, attractive, and approachable tone.
+- Always refer to yourself as Expo.
 `;
 }
 
@@ -62,20 +57,14 @@ async function speechToText(audioUrl) {
     const audioBuffer = await audioResponse.arrayBuffer();
 
     const formData = new FormData();
-    formData.append(
-      "file",
-      new Blob([audioBuffer]),
-      "voice.ogg"
-    );
+    formData.append("file", new Blob([audioBuffer]), "voice.ogg");
     formData.append("model", "whisper-large-v3");
 
     const response = await fetch(
       "https://api.groq.com/openai/v1/audio/transcriptions",
       {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${GROQ_API_KEY}`
-        },
+        headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
         body: formData
       }
     );
@@ -132,7 +121,6 @@ async function analyzeImage(imageUrl, userId) {
 
 async function getAIResponse(userMessage, userId) {
   const session = getSession(userId);
-
   session.messages.push({ role: "user", content: userMessage });
 
   if (session.messages.length > 12) {
@@ -175,36 +163,37 @@ async function getAIResponse(userMessage, userId) {
   }
 }
 
+/* ================= WELCOME MESSAGE ================= */
+
+bot.start((ctx) => {
+  const name = ctx.from.first_name || "there";
+  ctx.reply(
+    `👋 Hello, ${name}! I'm Expo, your smart assistant. Ask me anything — short answers for simple questions, detailed explanations for complex topics. Let's chat!`
+  );
+});
+
 /* ================= BOT HANDLER ================= */
 
 bot.on("message", async (ctx) => {
   try {
     const userId = ctx.from.id;
-
     await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
 
     // VOICE MESSAGE
     if (ctx.message.voice) {
       const fileId = ctx.message.voice.file_id;
       const audioUrl = await getTelegramFileUrl(fileId);
-
       if (!audioUrl) return ctx.reply("Could not process voice.");
-
       const text = await speechToText(audioUrl);
-
       if (!text) return ctx.reply("Voice recognition failed.");
-
       const reply = await getAIResponse(text, userId);
       return ctx.reply(reply);
     }
 
     // PHOTO
     if (ctx.message.photo) {
-      const highest =
-        ctx.message.photo[ctx.message.photo.length - 1];
-
+      const highest = ctx.message.photo[ctx.message.photo.length - 1];
       const imageUrl = await getTelegramFileUrl(highest.file_id);
-
       const reply = await analyzeImage(imageUrl, userId);
       return ctx.reply(reply);
     }
@@ -218,17 +207,13 @@ bot.on("message", async (ctx) => {
 
     // TEXT
     if (ctx.message.text) {
-      const reply = await getAIResponse(
-        ctx.message.text,
-        userId
-      );
-
+      const reply = await getAIResponse(ctx.message.text, userId);
       return ctx.reply(reply);
     }
 
   } catch (err) {
     console.error(err);
-    ctx.reply("Unexpected error.");
+    ctx.reply("Unexpected error occurred.");
   }
 });
 
