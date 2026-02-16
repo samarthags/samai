@@ -1,11 +1,11 @@
 import { Telegraf } from "telegraf";
 import fetch from "node-fetch";
 
+// Initialize bot
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 /* ================= MEMORY ================= */
-
 const sessions = new Map();
 
 function getSession(userId) {
@@ -16,41 +16,32 @@ function getSession(userId) {
 }
 
 /* ================= SYSTEM PROMPT ================= */
-
 function buildSystemPrompt() {
   return `
-You are Expo AI, a smart and friendly assistant.
-
-Created by Samartha GS,
-an 18-year-old Full Stack Developer from Sagara.
+You are Expo, a smart, friendly, and professional AI assistant.
 
 Rules:
-- Never mention OpenAI, Groq, ChatGPT, or any AI provider.
-- If asked about model, say: "I run on GS Model."
-- Short and crisp answers for simple questions.
-- Detailed, clear, and professional responses for complex topics.
-- Friendly, neat, attractive, and approachable tone.
 - Always refer to yourself as Expo.
+- Never mention OpenAI, Groq, ChatGPT, or creators.
+- If asked about your model, always say: "I run on GS Model."
+- Give short, clear answers for simple questions.
+- Give detailed, structured answers for complex topics.
+- Friendly, approachable, neat, and professional tone.
 `;
 }
 
 /* ================= TELEGRAM FILE URL ================= */
-
 async function getTelegramFileUrl(fileId) {
   const res = await fetch(
     `https://api.telegram.org/bot${process.env.BOT_TOKEN}/getFile?file_id=${fileId}`
   );
-
   const data = await res.json();
   const filePath = data.result?.file_path;
-
   if (!filePath) return null;
-
   return `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${filePath}`;
 }
 
-/* ================= WHISPER VOICE TO TEXT ================= */
-
+/* ================= VOICE TO TEXT ================= */
 async function speechToText(audioUrl) {
   try {
     const audioResponse = await fetch(audioUrl);
@@ -65,13 +56,12 @@ async function speechToText(audioUrl) {
       {
         method: "POST",
         headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
-        body: formData
+        body: formData,
       }
     );
 
     const data = await response.json();
     return data.text;
-
   } catch (err) {
     console.error("Whisper Error:", err);
     return null;
@@ -79,7 +69,6 @@ async function speechToText(audioUrl) {
 }
 
 /* ================= IMAGE ANALYSIS ================= */
-
 async function analyzeImage(imageUrl, userId) {
   try {
     const response = await fetch(
@@ -88,7 +77,7 @@ async function analyzeImage(imageUrl, userId) {
         method: "POST",
         headers: {
           Authorization: `Bearer ${GROQ_API_KEY}`,
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
           model: "meta-llama/llama-4-scout-17b-16e-instruct",
@@ -98,34 +87,42 @@ async function analyzeImage(imageUrl, userId) {
               role: "user",
               content: [
                 { type: "text", text: "Explain this image clearly." },
-                { type: "image_url", image_url: { url: imageUrl } }
-              ]
-            }
+                { type: "image_url", image_url: { url: imageUrl } },
+              ],
+            },
           ],
           temperature: 0.7,
-          max_tokens: 700
-        })
+          max_tokens: 700,
+        }),
       }
     );
 
     const data = await response.json();
     return data.choices?.[0]?.message?.content || "Couldn't analyze image.";
-
   } catch (err) {
-    console.error(err);
+    console.error("Image Analysis Error:", err);
     return "Image analysis failed.";
   }
 }
 
-/* ================= TEXT AI ================= */
-
+/* ================= AI RESPONSE ================= */
 async function getAIResponse(userMessage, userId) {
   const session = getSession(userId);
+
+  // Add user message to session
   session.messages.push({ role: "user", content: userMessage });
 
-  if (session.messages.length > 12) {
-    session.messages = session.messages.slice(-12);
+  // Keep last 20 messages for context
+  if (session.messages.length > 20) {
+    session.messages = session.messages.slice(-20);
   }
+
+  // Enhanced message to guide answer length
+  const enhancedMessage = `
+${userMessage}
+Respond concisely for simple questions.
+Provide detailed explanations for complex questions.
+`;
 
   try {
     const response = await fetch(
@@ -134,52 +131,47 @@ async function getAIResponse(userMessage, userId) {
         method: "POST",
         headers: {
           Authorization: `Bearer ${GROQ_API_KEY}`,
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
           model: "llama-3.1-8b-instant",
           messages: [
             { role: "system", content: buildSystemPrompt() },
-            ...session.messages
+            ...session.messages,
+            { role: "user", content: enhancedMessage },
           ],
           temperature: 0.7,
-          max_tokens: 700
-        })
+          max_tokens: 1200,
+        }),
       }
     );
 
     const data = await response.json();
-    const reply = data.choices?.[0]?.message?.content;
+    const reply = data.choices?.[0]?.message?.content || "Expo encountered an error.";
 
-    if (!reply) return "Something went wrong.";
-
+    // Add assistant reply to session
     session.messages.push({ role: "assistant", content: reply });
 
     return reply;
-
   } catch (err) {
-    console.error(err);
-    return "AI error.";
+    console.error("AI Response Error:", err);
+    return "Expo encountered an error.";
   }
 }
 
 /* ================= WELCOME MESSAGE ================= */
-
 bot.start((ctx) => {
   const name = ctx.from.first_name || "there";
-  ctx.reply(
-    `👋 Hello, ${name}! I'm Expo. How can I help you today ?`
-  );
+  ctx.reply(`Hello ${name}! I'm Expo. How can I assist you today?`);
 });
 
-/* ================= BOT HANDLER ================= */
-
+/* ================= MESSAGE HANDLER ================= */
 bot.on("message", async (ctx) => {
   try {
     const userId = ctx.from.id;
     await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
 
-    // VOICE MESSAGE
+    // Voice
     if (ctx.message.voice) {
       const fileId = ctx.message.voice.file_id;
       const audioUrl = await getTelegramFileUrl(fileId);
@@ -190,7 +182,7 @@ bot.on("message", async (ctx) => {
       return ctx.reply(reply);
     }
 
-    // PHOTO
+    // Photo
     if (ctx.message.photo) {
       const highest = ctx.message.photo[ctx.message.photo.length - 1];
       const imageUrl = await getTelegramFileUrl(highest.file_id);
@@ -198,27 +190,25 @@ bot.on("message", async (ctx) => {
       return ctx.reply(reply);
     }
 
-    // DOCUMENT
+    // Document
     if (ctx.message.document) {
       return ctx.reply(
         `📄 Document received: ${ctx.message.document.file_name}\nAdvanced document analysis coming soon.`
       );
     }
 
-    // TEXT
+    // Text
     if (ctx.message.text) {
       const reply = await getAIResponse(ctx.message.text, userId);
       return ctx.reply(reply);
     }
-
   } catch (err) {
     console.error(err);
     ctx.reply("Unexpected error occurred.");
   }
 });
 
-/* ================= WEBHOOK ================= */
-
+/* ================= WEBHOOK HANDLER ================= */
 export default async function handler(req, res) {
   if (req.method === "POST") {
     await bot.handleUpdate(req.body);
