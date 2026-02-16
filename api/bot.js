@@ -166,8 +166,11 @@ async function getAIResponse(userMessage, userId) {
 /* ================= WELCOME MESSAGE ================= */
 
 bot.start((ctx) => {
-  const name = ctx.from.first_name || "there";
-  ctx.reply(
+  // Escape MarkdownV2 special characters in the user's name
+  const name = (ctx.from.first_name || "there")
+    .replace(/[_*[\]()~`>#+\-=|{}.!]/g, "\\$&");
+
+  ctx.replyWithMarkdownV2(
     `👋 Hello, *${name}*! \nI'm *Expo AI*. How can I help you today?`
   );
 });
