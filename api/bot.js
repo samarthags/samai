@@ -147,7 +147,7 @@ async function getAIResponse(userMessage, userId) {
   }
 }
 
-/* ================= WELCOME MESSAGE ================= */
+/* ================= WELCOME MESSAGE (/start) ================= */
 
 bot.start((ctx) => {
   const name = escapeMarkdownV2(ctx.from.first_name || "there");
@@ -201,18 +201,10 @@ bot.on("message", async (ctx) => {
   }
 });
 
-/* ================= WEBHOOK ================= */
+/* ================= POLLING ================= */
 
-export default async function handler(req, res) {
-  if (req.method === "POST") {
-    try {
-      await bot.handleUpdate(req.body);
-      res.status(200).send("ok");
-    } catch (err) {
-      console.error("Webhook error:", err);
-      res.status(500).send("Error handling update");
-    }
-  } else {
-    res.status(200).send("Expo AI Running 🚀");
-  }
-}
+// Use polling to make /start work locally
+bot.launch().then(() => console.log("🚀 Expo AI Bot Started!"));
+
+process.once("SIGINT", () => bot.stop("SIGINT"));
+process.once("SIGTERM", () => bot.stop("SIGTERM"));
