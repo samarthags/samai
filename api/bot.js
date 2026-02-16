@@ -5,9 +5,7 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 /* ================= MEMORY ================= */
-
 const sessions = new Map();
-
 function getSession(userId) {
   if (!sessions.has(userId)) {
     sessions.set(userId, { messages: [] });
@@ -16,13 +14,11 @@ function getSession(userId) {
 }
 
 /* ================= ESCAPE MARKDOWNV2 ================= */
-
 function escapeMarkdownV2(text) {
   return text.replace(/[_*[\]()~`>#+\-=|{}.!]/g, "\\$&");
 }
 
 /* ================= TELEGRAM FILE URL ================= */
-
 async function getTelegramFileUrl(fileId) {
   const res = await fetch(
     `https://api.telegram.org/bot${process.env.BOT_TOKEN}/getFile?file_id=${fileId}`
@@ -34,7 +30,6 @@ async function getTelegramFileUrl(fileId) {
 }
 
 /* ================= WHISPER VOICE TO TEXT ================= */
-
 async function speechToText(audioUrl) {
   try {
     const audioResponse = await fetch(audioUrl);
@@ -55,7 +50,6 @@ async function speechToText(audioUrl) {
 
     const data = await response.json();
     return data.text;
-
   } catch (err) {
     console.error("Whisper Error:", err);
     return null;
@@ -63,8 +57,7 @@ async function speechToText(audioUrl) {
 }
 
 /* ================= IMAGE ANALYSIS ================= */
-
-async function analyzeImage(imageUrl, userId) {
+async function analyzeImage(imageUrl) {
   try {
     const response = await fetch(
       "https://api.groq.com/openai/v1/chat/completions",
@@ -94,7 +87,6 @@ async function analyzeImage(imageUrl, userId) {
 
     const data = await response.json();
     return data.choices?.[0]?.message?.content || "Couldn't analyze image.";
-
   } catch (err) {
     console.error(err);
     return "Image analysis failed.";
@@ -102,7 +94,6 @@ async function analyzeImage(imageUrl, userId) {
 }
 
 /* ================= TEXT AI ================= */
-
 async function getAIResponse(userMessage, userId) {
   const session = getSession(userId);
   session.messages.push({ role: "user", content: userMessage });
@@ -136,11 +127,8 @@ async function getAIResponse(userMessage, userId) {
     const reply = data.choices?.[0]?.message?.content;
 
     if (!reply) return "Something went wrong.";
-
     session.messages.push({ role: "assistant", content: reply });
-
     return reply;
-
   } catch (err) {
     console.error(err);
     return "AI error.";
@@ -148,7 +136,6 @@ async function getAIResponse(userMessage, userId) {
 }
 
 /* ================= WELCOME MESSAGE (/start) ================= */
-
 bot.start((ctx) => {
   const name = escapeMarkdownV2(ctx.from.first_name || "there");
   ctx.replyWithMarkdownV2(
@@ -157,11 +144,13 @@ bot.start((ctx) => {
 });
 
 /* ================= BOT HANDLER ================= */
-
 bot.on("message", async (ctx) => {
   try {
     const userId = ctx.from.id;
     await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
+
+    // Ignore /start here
+    if (ctx.message.text && ctx.message.text.startsWith("/start")) return;
 
     // VOICE MESSAGE
     if (ctx.message.voice) {
@@ -178,7 +167,7 @@ bot.on("message", async (ctx) => {
     if (ctx.message.photo) {
       const highest = ctx.message.photo[ctx.message.photo.length - 1];
       const imageUrl = await getTelegramFileUrl(highest.file_id);
-      const reply = await analyzeImage(imageUrl, userId);
+      const reply = await analyzeImage(imageUrl);
       return ctx.reply(reply);
     }
 
@@ -202,9 +191,6 @@ bot.on("message", async (ctx) => {
 });
 
 /* ================= POLLING ================= */
-
-// Use polling to make /start work locally
 bot.launch().then(() => console.log("🚀 Expo AI Bot Started!"));
-
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
