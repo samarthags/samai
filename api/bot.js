@@ -1,5 +1,5 @@
-import { Telegraf } from 'telegraf';
-import fetch from 'node-fetch';
+import { Telegraf } from "telegraf";
+import fetch from "node-fetch";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
@@ -19,26 +19,29 @@ function getUserData(userId) {
   return userSessions.get(userId);
 }
 
-// ================= CUSTOM KNOWLEDGE =================
-const customKnowledge = {
-  jayanth: "Jayanth is my close friend. He is a frontend developer and startup enthusiast.",
-  samartha: "Samartha GS is a full stack developer building powerful AI tools and Telegram bots.",
-  creator: "This AI was built and customized by Samartha."
-};
+// ================= PERSONAL KNOWLEDGE =================
+const personalKnowledge = `
+Personal Knowledge About Samartha:
+
+- Jayanth is Samartha's close friend.
+  He works as a frontend developer and is passionate about startups.
+
+- Samartha GS is a full stack developer
+  building AI tools and Telegram bots.
+
+If a user asks about these people,
+use this knowledge naturally.
+Do NOT copy exactly.
+Respond conversationally.
+Always reply in the same language as the user.
+Never say you are ChatGPT.
+If asked who built you, say you were built by Samartha.
+`;
 
 // ================= AI FUNCTION =================
 async function getAIResponse(userMessage, userId) {
   const userData = getUserData(userId);
-  const lowerMsg = userMessage.toLowerCase();
 
-  // 🔹 Custom Knowledge Override
-  for (const key in customKnowledge) {
-    if (lowerMsg.includes(key)) {
-      return customKnowledge[key];
-    }
-  }
-
-  // 🔹 Save User Message
   userData.messages.push({ role: "user", content: userMessage });
 
   // Limit memory
@@ -51,64 +54,73 @@ async function getAIResponse(userMessage, userId) {
       role: "system",
       content: `
 You are Samartha's personal AI assistant.
-You are smart, friendly, confident.
-You were built by Samartha.
-Never say you are ChatGPT.
-If someone asks who built you, say "I was built by Samartha."
-Talk naturally and clearly.
-      `
+You are smart, friendly and confident.
+
+${personalKnowledge}
+`
     },
     ...userData.messages
   ];
 
   try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${GROQ_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "llama-3.1-8b-instant",
-        messages,
-        temperature: 0.7,
-        max_tokens: 700
-      })
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000); // 15 sec safety
+
+    const response = await fetch(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${GROQ_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "llama-3.1-8b-instant",
+          messages,
+          temperature: 0.7,
+          max_tokens: 700
+        }),
+        signal: controller.signal
+      }
+    );
+
+    clearTimeout(timeout);
 
     const data = await response.json();
+
+    if (!data.choices) {
+      console.error("Groq error:", data);
+      return "⚠️ AI error. Please try again.";
+    }
+
     const reply = data.choices[0].message.content;
 
-    // Save assistant reply
     userData.messages.push({ role: "assistant", content: reply });
 
     return reply;
 
   } catch (error) {
     console.error("AI Error:", error);
-    return "⚠️ AI is currently unavailable. Please try again.";
+    return "⚠️ AI took too long to respond. Try again.";
   }
 }
 
-// ================= BOT COMMANDS =================
+// ================= COMMANDS =================
 
 bot.start((ctx) => {
   const userId = ctx.from.id;
   const userData = getUserData(userId);
-
   userData.name = ctx.from.first_name;
 
   ctx.reply(
 `🤖 *Welcome to Samartha AI*
 
-I am your personal AI assistant.
-
 ✨ I remember context
-✨ I am customized
+✨ I use personal knowledge
 ✨ I was built by Samartha
 
-Just start chatting with me 🚀`,
-  { parse_mode: "Markdown" }
+Start chatting 🚀`,
+    { parse_mode: "Markdown" }
   );
 });
 
@@ -124,10 +136,20 @@ bot.on("text", async (ctx) => {
   const userId = ctx.from.id;
   const message = ctx.message.text;
 
-  const reply = await getAIResponse(message, userId);
-  ctx.reply(reply);
+  try {
+    // Typing indicator
+    await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
+
+    const reply = await getAIResponse(message, userId);
+
+    await ctx.reply(reply);
+
+  } catch (err) {
+    console.error("Message Error:", err);
+    ctx.reply("⚠️ Something went wrong.");
+  }
 });
 
 // ================= START BOT =================
 bot.launch();
-console.log("🚀 AI Bot Running...");
+console.log("🚀 Samartha AI Bot Running...");
