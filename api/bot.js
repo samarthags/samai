@@ -1,51 +1,81 @@
 import { Telegraf } from "telegraf";
+import { knowledge } from "../data/knowledge.js";
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 // ================= USER MEMORY =================
-const userSessions = new Map();
+const sessions = new Map();
 
-function getUserSession(userId) {
-  if (!userSessions.has(userId)) {
-    userSessions.set(userId, {
-      messages: []
-    });
+function getSession(userId) {
+  if (!sessions.has(userId)) {
+    sessions.set(userId, { messages: [] });
   }
-  return userSessions.get(userId);
+  return sessions.get(userId);
 }
 
-// ================= PERSONAL KNOWLEDGE =================
-const personalKnowledge = `
-You are Samartha's personal AI assistant.
+// ================= SMART KNOWLEDGE SELECTOR =================
+function getRelevantKnowledge(message) {
+  const text = message.toLowerCase();
+  let context = "";
 
-Facts:
-- Samartha GS is a full stack developer.
-- He builds AI tools and Telegram bots.
-- Jayanth is Samartha's close friend and frontend developer.
+  if (text.includes("samartha")) {
+    context += `
+Creator Info:
+${knowledge.creator.name} is a ${knowledge.creator.role}.
+Skills: ${knowledge.creator.skills.join(", ")}.
+Mission: ${knowledge.creator.mission}.
+`;
+  }
+
+  if (text.includes("jayanth")) {
+    knowledge.friends.forEach(friend => {
+      context += `
+Friend Info:
+${friend.name} is a ${friend.role}.
+Interest: ${friend.interest}.
+`;
+    });
+  }
+
+  if (text.includes("project") || text.includes("build")) {
+    context += `
+Projects:
+${knowledge.projects.join(", ")}.
+`;
+  }
+
+  return context;
+}
+
+// ================= BUILD SYSTEM PROMPT =================
+function buildSystemPrompt(extraKnowledge = "") {
+  return `
+You are Samartha's advanced AI assistant.
+
+${extraKnowledge}
 
 Rules:
-- Always reply in the same language as the user.
-- Never say you are ChatGPT.
-- If asked who built you, say you were built by Samartha.
-- Be confident, smart and friendly.
+${knowledge.rules.join("\n")}
 `;
+}
 
 // ================= AI FUNCTION =================
 async function getAIResponse(userMessage, userId) {
-  const session = getUserSession(userId);
+  const session = getSession(userId);
 
   session.messages.push({ role: "user", content: userMessage });
 
-  // Limit memory to last 10 messages
   if (session.messages.length > 10) {
     session.messages = session.messages.slice(-10);
   }
 
+  const relevantKnowledge = getRelevantKnowledge(userMessage);
+
   const messages = [
     {
       role: "system",
-      content: personalKnowledge
+      content: buildSystemPrompt(relevantKnowledge)
     },
     ...session.messages
   ];
@@ -59,12 +89,12 @@ async function getAIResponse(userMessage, userId) {
       {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${GROQ_API_KEY}`,
+          Authorization: `Bearer ${GROQ_API_KEY}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
           model: "llama-3.1-8b-instant",
-          messages: messages,
+          messages,
           temperature: 0.7,
           max_tokens: 700
         }),
@@ -78,7 +108,7 @@ async function getAIResponse(userMessage, userId) {
 
     if (!data.choices) {
       console.error(data);
-      return "⚠️ AI error. Try again.";
+      return "⚠️ AI error.";
     }
 
     const reply = data.choices[0].message.content;
@@ -87,20 +117,17 @@ async function getAIResponse(userMessage, userId) {
 
     return reply;
 
-  } catch (error) {
-    console.error("AI Error:", error);
-    return "⚠️ AI response timeout.";
+  } catch (err) {
+    console.error("AI Error:", err);
+    return "⚠️ AI timeout.";
   }
 }
 
 // ================= COMMANDS =================
 bot.start((ctx) => {
   ctx.reply(
-`🚀 *Samartha AI Bot is Live*
+`🚀 *Samartha Advanced AI*
 
-✨ Smart AI
-✨ Context memory
-✨ Built by Samartha
 
 Start chatting 🔥`,
     { parse_mode: "Markdown" }
@@ -108,8 +135,7 @@ Start chatting 🔥`,
 });
 
 bot.command("clear", (ctx) => {
-  const session = getUserSession(ctx.from.id);
-  session.messages = [];
+  getSession(ctx.from.id).messages = [];
   ctx.reply("🧹 Memory cleared.");
 });
 
@@ -118,14 +144,15 @@ bot.on("text", async (ctx) => {
   try {
     await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
 
-    const userMessage = ctx.message.text;
-
-    const reply = await getAIResponse(userMessage, ctx.from.id);
+    const reply = await getAIResponse(
+      ctx.message.text,
+      ctx.from.id
+    );
 
     await ctx.reply(reply);
 
   } catch (err) {
-    console.error("Message error:", err);
+    console.error(err);
     ctx.reply("⚠️ Something went wrong.");
   }
 });
