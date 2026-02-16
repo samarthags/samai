@@ -166,15 +166,15 @@ async function getAIResponse(userMessage, userId) {
 /* ================= WELCOME MESSAGE ================= */
 
 bot.start((ctx) => {
-  // Escape MarkdownV2 special characters in the user's name
-  const name = (ctx.from.first_name || "there")
-    .replace(/[_*[\]()~`>#+\-=|{}.!]/g, "\\$&");
+  const rawName = ctx.from.first_name || "there";
+
+  // ESCAPE all MarkdownV2 special chars
+  const name = rawName.replace(/([_*[\]()~`>#+\-=|{}.!])/g, "\\$1");
 
   ctx.replyWithMarkdownV2(
     `👋 Hello, *${name}*! \nI'm *Expo AI*. How can I help you today?`
   );
 });
-
 /* ================= BOT HANDLER ================= */
 
 bot.on("message", async (ctx) => {
