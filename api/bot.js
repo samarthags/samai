@@ -1,18 +1,14 @@
 import { Telegraf } from "telegraf";
-import fetch from "node-fetch";
 
-const BOT_TOKEN = process.env.BOT_TOKEN;
+const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
-
-const bot = new Telegraf(BOT_TOKEN);
 
 // ================= USER MEMORY =================
 const userSessions = new Map();
 
-function getUserData(userId) {
+function getUserSession(userId) {
   if (!userSessions.has(userId)) {
     userSessions.set(userId, {
-      name: null,
       messages: []
     });
   }
@@ -21,62 +17,54 @@ function getUserData(userId) {
 
 // ================= PERSONAL KNOWLEDGE =================
 const personalKnowledge = `
-Personal Knowledge About Samartha:
+You are Samartha's personal AI assistant.
 
-- Jayanth is Samartha's close friend.
-  He works as a frontend developer and is passionate about startups.
+Facts:
+- Samartha GS is a full stack developer.
+- He builds AI tools and Telegram bots.
+- Jayanth is Samartha's close friend and frontend developer.
 
-- Samartha GS is a full stack developer
-  building AI tools and Telegram bots.
-
-If a user asks about these people,
-use this knowledge naturally.
-Do NOT copy exactly.
-Respond conversationally.
-Always reply in the same language as the user.
-Never say you are ChatGPT.
-If asked who built you, say you were built by Samartha.
+Rules:
+- Always reply in the same language as the user.
+- Never say you are ChatGPT.
+- If asked who built you, say you were built by Samartha.
+- Be confident, smart and friendly.
 `;
 
 // ================= AI FUNCTION =================
 async function getAIResponse(userMessage, userId) {
-  const userData = getUserData(userId);
+  const session = getUserSession(userId);
 
-  userData.messages.push({ role: "user", content: userMessage });
+  session.messages.push({ role: "user", content: userMessage });
 
-  // Limit memory
-  if (userData.messages.length > 12) {
-    userData.messages = userData.messages.slice(-12);
+  // Limit memory to last 10 messages
+  if (session.messages.length > 10) {
+    session.messages = session.messages.slice(-10);
   }
 
   const messages = [
     {
       role: "system",
-      content: `
-You are Samartha's personal AI assistant.
-You are smart, friendly and confident.
-
-${personalKnowledge}
-`
+      content: personalKnowledge
     },
-    ...userData.messages
+    ...session.messages
   ];
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000); // 15 sec safety
+    const timeout = setTimeout(() => controller.abort(), 15000);
 
     const response = await fetch(
       "https://api.groq.com/openai/v1/chat/completions",
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${GROQ_API_KEY}`,
+          "Authorization": `Bearer ${GROQ_API_KEY}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
           model: "llama-3.1-8b-instant",
-          messages,
+          messages: messages,
           temperature: 0.7,
           max_tokens: 700
         }),
@@ -89,67 +77,70 @@ ${personalKnowledge}
     const data = await response.json();
 
     if (!data.choices) {
-      console.error("Groq error:", data);
-      return "⚠️ AI error. Please try again.";
+      console.error(data);
+      return "⚠️ AI error. Try again.";
     }
 
     const reply = data.choices[0].message.content;
 
-    userData.messages.push({ role: "assistant", content: reply });
+    session.messages.push({ role: "assistant", content: reply });
 
     return reply;
 
   } catch (error) {
     console.error("AI Error:", error);
-    return "⚠️ AI took too long to respond. Try again.";
+    return "⚠️ AI response timeout.";
   }
 }
 
 // ================= COMMANDS =================
-
 bot.start((ctx) => {
-  const userId = ctx.from.id;
-  const userData = getUserData(userId);
-  userData.name = ctx.from.first_name;
-
   ctx.reply(
-`🤖 *Welcome to Samartha AI*
+`🚀 *Samartha AI Bot is Live*
 
-✨ I remember context
-✨ I use personal knowledge
-✨ I was built by Samartha
+✨ Smart AI
+✨ Context memory
+✨ Built by Samartha
 
-Start chatting 🚀`,
+Start chatting 🔥`,
     { parse_mode: "Markdown" }
   );
 });
 
 bot.command("clear", (ctx) => {
-  const userId = ctx.from.id;
-  const userData = getUserData(userId);
-  userData.messages = [];
-  ctx.reply("🧹 Chat memory cleared.");
+  const session = getUserSession(ctx.from.id);
+  session.messages = [];
+  ctx.reply("🧹 Memory cleared.");
 });
 
-// ================= MAIN MESSAGE HANDLER =================
+// ================= MESSAGE HANDLER =================
 bot.on("text", async (ctx) => {
-  const userId = ctx.from.id;
-  const message = ctx.message.text;
-
   try {
-    // Typing indicator
     await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
 
-    const reply = await getAIResponse(message, userId);
+    const userMessage = ctx.message.text;
+
+    const reply = await getAIResponse(userMessage, ctx.from.id);
 
     await ctx.reply(reply);
 
   } catch (err) {
-    console.error("Message Error:", err);
+    console.error("Message error:", err);
     ctx.reply("⚠️ Something went wrong.");
   }
 });
 
-// ================= START BOT =================
-bot.launch();
-console.log("🚀 Samartha AI Bot Running...");
+// ================= WEBHOOK HANDLER =================
+export default async function handler(req, res) {
+  if (req.method === "POST") {
+    try {
+      await bot.handleUpdate(req.body);
+      res.status(200).send("ok");
+    } catch (error) {
+      console.error("Webhook error:", error);
+      res.status(500).send("error");
+    }
+  } else {
+    res.status(200).send("Samartha AI Webhook Active 🚀");
+  }
+}
