@@ -5,7 +5,7 @@ He builds AI systems, Telegram bots and automation tools.
 His focus is building smart AI-driven products.
 
 People:
-Jayanth is Samartha's close friend.
+Disha is Samartha's close friend.
 He is a Frontend Developer and passionate about startups and UI systems.
 
 Projects:
