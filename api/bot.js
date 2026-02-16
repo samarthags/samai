@@ -1,10 +1,10 @@
 import { Telegraf } from "telegraf";
-import { knowledge } from "../data/knowledge.js";
+import { knowledgeBase } from "../data/knowledge.js";
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-// ================= USER MEMORY =================
+// ====== MEMORY ======
 const sessions = new Map();
 
 function getSession(userId) {
@@ -14,53 +14,25 @@ function getSession(userId) {
   return sessions.get(userId);
 }
 
-// ================= SMART KNOWLEDGE SELECTOR =================
-function getRelevantKnowledge(message) {
-  const text = message.toLowerCase();
-  let context = "";
-
-  if (text.includes("samartha")) {
-    context += `
-Creator Info:
-${knowledge.creator.name} is a ${knowledge.creator.role}.
-Skills: ${knowledge.creator.skills.join(", ")}.
-Mission: ${knowledge.creator.mission}.
-`;
-  }
-
-  if (text.includes("jayanth")) {
-    knowledge.friends.forEach(friend => {
-      context += `
-Friend Info:
-${friend.name} is a ${friend.role}.
-Interest: ${friend.interest}.
-`;
-    });
-  }
-
-  if (text.includes("project") || text.includes("build")) {
-    context += `
-Projects:
-${knowledge.projects.join(", ")}.
-`;
-  }
-
-  return context;
-}
-
-// ================= BUILD SYSTEM PROMPT =================
-function buildSystemPrompt(extraKnowledge = "") {
+// ====== SYSTEM PROMPT ======
+function buildSystemPrompt() {
   return `
 You are Samartha's advanced AI assistant.
 
-${extraKnowledge}
+You have access to the following internal knowledge:
 
-Rules:
-${knowledge.rules.join("\n")}
+${knowledgeBase}
+
+Instructions:
+- Analyze whether the user's question relates to the internal knowledge.
+- If related, answer naturally using the knowledge.
+- Do NOT copy sentences directly.
+- Rewrite in your own words.
+- If not related, answer normally using general intelligence.
 `;
 }
 
-// ================= AI FUNCTION =================
+// ====== AI RESPONSE ======
 async function getAIResponse(userMessage, userId) {
   const session = getSession(userId);
 
@@ -70,12 +42,10 @@ async function getAIResponse(userMessage, userId) {
     session.messages = session.messages.slice(-10);
   }
 
-  const relevantKnowledge = getRelevantKnowledge(userMessage);
-
   const messages = [
     {
       role: "system",
-      content: buildSystemPrompt(relevantKnowledge)
+      content: buildSystemPrompt()
     },
     ...session.messages
   ];
@@ -123,14 +93,13 @@ async function getAIResponse(userMessage, userId) {
   }
 }
 
-// ================= COMMANDS =================
+// ====== COMMANDS ======
 bot.start((ctx) => {
   ctx.reply(
-`🚀 *Samartha Advanced AI*
+`🚀 Samartha Advanced AI
 
-
-Start chatting 🔥`,
-    { parse_mode: "Markdown" }
+Smart knowledge reasoning enabled.
+Start chatting 🔥`
   );
 });
 
@@ -139,7 +108,7 @@ bot.command("clear", (ctx) => {
   ctx.reply("🧹 Memory cleared.");
 });
 
-// ================= MESSAGE HANDLER =================
+// ====== MESSAGE HANDLER ======
 bot.on("text", async (ctx) => {
   try {
     await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
@@ -157,7 +126,7 @@ bot.on("text", async (ctx) => {
   }
 });
 
-// ================= WEBHOOK HANDLER =================
+// ====== WEBHOOK ======
 export default async function handler(req, res) {
   if (req.method === "POST") {
     try {
