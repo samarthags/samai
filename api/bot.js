@@ -34,18 +34,21 @@ Rules:
 `;
 }
 
+/* ================= ESCAPE MARKDOWNV2 ================= */
+
+function escapeMarkdownV2(text) {
+  return text.replace(/[_*[\]()~`>#+\-=|{}.!]/g, "\\$&");
+}
+
 /* ================= TELEGRAM FILE URL ================= */
 
 async function getTelegramFileUrl(fileId) {
   const res = await fetch(
     `https://api.telegram.org/bot${process.env.BOT_TOKEN}/getFile?file_id=${fileId}`
   );
-
   const data = await res.json();
   const filePath = data.result?.file_path;
-
   if (!filePath) return null;
-
   return `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${filePath}`;
 }
 
@@ -166,7 +169,7 @@ async function getAIResponse(userMessage, userId) {
 /* ================= WELCOME MESSAGE ================= */
 
 bot.start((ctx) => {
-  const name = ctx.from.first_name || "there";
+  const name = escapeMarkdownV2(ctx.from.first_name || "there");
   ctx.replyWithMarkdownV2(
     `👋 Hello, *${name}*! \nI'm *Expo AI*, your smart assistant. \nHow can I help you today?`
   );
@@ -221,8 +224,13 @@ bot.on("message", async (ctx) => {
 
 export default async function handler(req, res) {
   if (req.method === "POST") {
-    await bot.handleUpdate(req.body);
-    res.status(200).send("ok");
+    try {
+      await bot.handleUpdate(req.body);
+      res.status(200).send("ok");
+    } catch (err) {
+      console.error("Webhook error:", err);
+      res.status(500).send("Error handling update");
+    }
   } else {
     res.status(200).send("Expo AI Running 🚀");
   }
