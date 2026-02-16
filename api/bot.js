@@ -1,244 +1,182 @@
-import { Telegraf } from "telegraf";
-import fetch from "node-fetch";
-import fs from "fs";
-import path from "path";
+import { Telegraf, Markup } from 'telegraf';
+import fetch from 'node-fetch';
+import fs from 'fs';
+import FormData from 'form-data';
 
-const bot = new Telegraf(process.env.BOT_TOKEN);
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
+// === CONFIG ===
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const GS_API_KEY = process.env.GS_API_KEY; // Your GS AI API key
+const bot = new Telegraf(BOT_TOKEN);
 
-/* ================= MEMORY ================= */
+// === STORAGE ===
+const userSessions = new Map();
 
-const sessions = new Map();
-
-function getSession(userId) {
-  if (!sessions.has(userId)) {
-    sessions.set(userId, { messages: [] });
+// === HELPER FUNCTIONS ===
+function getUserData(userId) {
+  if (!userSessions.has(userId)) {
+    userSessions.set(userId, { messages: [] });
   }
-  return sessions.get(userId);
+  return userSessions.get(userId);
 }
 
-/* ================= SYSTEM PROMPT ================= */
-
-function buildSystemPrompt() {
-  return `
-You are Expo AI.
-
-Created by Samartha GS,
-18-year-old student from Sagara,
-Full Stack Developer.
-
-You run on GS Model.
-
-Rules:
-- Never mention OpenAI, Groq, ChatGPT.
-- If asked about model, say: "I run on GS Model."
-- Short answers for simple questions.
-- Detailed answers for complex topics.
-- Clear, attractive, friendly responses.
-- Sound intelligent and professional.
-`;
+// Typing indicator
+async function sendTyping(ctx, duration = 1500) {
+  await ctx.sendChatAction('typing');
+  return new Promise((resolve) => setTimeout(resolve, duration));
 }
 
-/* ================= TELEGRAM FILE URL ================= */
-
-async function getTelegramFileUrl(fileId) {
-  const res = await fetch(
-    `https://api.telegram.org/bot${process.env.BOT_TOKEN}/getFile?file_id=${fileId}`
-  );
-
-  const data = await res.json();
-  const filePath = data.result?.file_path;
-
-  if (!filePath) return null;
-
-  return `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${filePath}`;
-}
-
-/* ================= WHISPER VOICE TO TEXT ================= */
-
-async function speechToText(audioUrl) {
+// OCR using GS model for images/docs
+async function extractTextFromFile(fileUrl) {
   try {
-    const audioResponse = await fetch(audioUrl);
-    const audioBuffer = await audioResponse.arrayBuffer();
-
-    const formData = new FormData();
-    formData.append(
-      "file",
-      new Blob([audioBuffer]),
-      "voice.ogg"
-    );
-    formData.append("model", "whisper-large-v3");
-
-    const response = await fetch(
-      "https://api.groq.com/openai/v1/audio/transcriptions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${GROQ_API_KEY}`
-        },
-        body: formData
-      }
-    );
-
+    const response = await fetch('https://api.gsamodel.com/vision/ocr', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${GS_API_KEY}` },
+      body: JSON.stringify({ url: fileUrl })
+    });
     const data = await response.json();
-    return data.text;
-
+    return data.text || '';
   } catch (err) {
-    console.error("Whisper Error:", err);
+    console.error('OCR error:', err);
+    return '';
+  }
+}
+
+// Generate AI answer
+async function getGSAnswer(prompt) {
+  try {
+    const response = await fetch('https://api.gsamodel.com/ai', {
+      method: 'POST',
+      headers: { 
+        'Authorization': `Bearer ${GS_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gs-model-1', // GS model
+        messages: [
+          { role: 'system', content: 'You are Expo, an AI by Samartha GS. Respond clearly, like a friendly tutor. Use short or long answers depending on question.' },
+          ...prompt
+        ],
+        max_tokens: 2000,
+        temperature: 0.7
+      })
+    });
+    const data = await response.json();
+    return data.choices[0].message.content;
+  } catch (err) {
+    console.error('AI error:', err);
+    return "⚠️ I'm having trouble processing that. Try again!";
+  }
+}
+
+// Voice message using Whisper
+async function textToVoice(text, filePath) {
+  try {
+    const form = new FormData();
+    form.append('text', text);
+    form.append('voice', 'en_us'); // Choose language
+
+    const response = await fetch('https://api.gsamodel.com/whisper', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${GS_API_KEY}` },
+      body: form
+    });
+    const buffer = Buffer.from(await response.arrayBuffer());
+    fs.writeFileSync(filePath, buffer);
+    return filePath;
+  } catch (err) {
+    console.error('Whisper error:', err);
     return null;
   }
 }
 
-/* ================= IMAGE ANALYSIS ================= */
-
-async function analyzeImage(imageUrl, userId) {
-  try {
-    const response = await fetch(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${GROQ_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: "meta-llama/llama-4-scout-17b-16e-instruct",
-          messages: [
-            { role: "system", content: buildSystemPrompt() },
-            {
-              role: "user",
-              content: [
-                { type: "text", text: "Explain this image clearly." },
-                { type: "image_url", image_url: { url: imageUrl } }
-              ]
-            }
-          ],
-          temperature: 0.7,
-          max_tokens: 700
-        })
-      }
-    );
-
-    const data = await response.json();
-    return data.choices?.[0]?.message?.content || "Couldn't analyze image.";
-
-  } catch (err) {
-    console.error(err);
-    return "Image analysis failed.";
-  }
-}
-
-/* ================= TEXT AI ================= */
-
-async function getAIResponse(userMessage, userId) {
-  const session = getSession(userId);
-
-  session.messages.push({ role: "user", content: userMessage });
-
-  if (session.messages.length > 12) {
-    session.messages = session.messages.slice(-12);
-  }
-
-  try {
-    const response = await fetch(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${GROQ_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: "llama-3.1-8b-instant",
-          messages: [
-            { role: "system", content: buildSystemPrompt() },
-            ...session.messages
-          ],
-          temperature: 0.7,
-          max_tokens: 700
-        })
-      }
-    );
-
-    const data = await response.json();
-    const reply = data.choices?.[0]?.message?.content;
-
-    if (!reply) return "Something went wrong.";
-
-    session.messages.push({ role: "assistant", content: reply });
-
-    return reply;
-
-  } catch (err) {
-    console.error(err);
-    return "AI error.";
-  }
-}
-
-/* ================= BOT HANDLER ================= */
-
-bot.on("message", async (ctx) => {
-  try {
-    const userId = ctx.from.id;
-
-    await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-
-    // VOICE MESSAGE
-    if (ctx.message.voice) {
-      const fileId = ctx.message.voice.file_id;
-      const audioUrl = await getTelegramFileUrl(fileId);
-
-      if (!audioUrl) return ctx.reply("Could not process voice.");
-
-      const text = await speechToText(audioUrl);
-
-      if (!text) return ctx.reply("Voice recognition failed.");
-
-      const reply = await getAIResponse(text, userId);
-      return ctx.reply(reply);
-    }
-
-    // PHOTO
-    if (ctx.message.photo) {
-      const highest =
-        ctx.message.photo[ctx.message.photo.length - 1];
-
-      const imageUrl = await getTelegramFileUrl(highest.file_id);
-
-      const reply = await analyzeImage(imageUrl, userId);
-      return ctx.reply(reply);
-    }
-
-    // DOCUMENT
-    if (ctx.message.document) {
-      return ctx.reply(
-        `📄 Document received: ${ctx.message.document.file_name}\nAdvanced document analysis coming soon.`
-      );
-    }
-
-    // TEXT
-    if (ctx.message.text) {
-      const reply = await getAIResponse(
-        ctx.message.text,
-        userId
-      );
-
-      return ctx.reply(reply);
-    }
-
-  } catch (err) {
-    console.error(err);
-    ctx.reply("Unexpected error.");
-  }
+// === BOT COMMANDS ===
+bot.start((ctx) => {
+  ctx.reply(
+    `🤖 Hi! I am Expo AI by Samartha GS.\n\n` +
+    `📌 You can send me text, images, or documents.\n` +
+    `💬 Ask a question like "Answer for 14" or just send any text.\n` +
+    `🎤 I can also reply with voice messages!`
+  );
 });
 
-/* ================= WEBHOOK ================= */
+// Handle text messages
+bot.on('text', async (ctx) => {
+  const userId = ctx.from.id;
+  const userData = getUserData(userId);
 
-export default async function handler(req, res) {
-  if (req.method === "POST") {
-    await bot.handleUpdate(req.body);
-    res.status(200).send("ok");
-  } else {
-    res.status(200).send("Expo AI Running 🚀");
-  }
-}
+  userData.messages.push({ role: 'user', content: ctx.message.text });
+
+  await sendTyping(ctx);
+
+  const aiReply = await getGSAnswer(userData.messages);
+  userData.messages.push({ role: 'assistant', content: aiReply });
+
+  // Send text reply
+  await ctx.reply(aiReply);
+
+  // Send voice reply
+  const voicePath = `./voice_${userId}.mp3`;
+  const voiceFile = await textToVoice(aiReply, voicePath);
+  if (voiceFile) await ctx.replyWithVoice({ source: voiceFile });
+});
+
+// Handle photo upload
+bot.on('photo', async (ctx) => {
+  const userId = ctx.from.id;
+  const photo = ctx.message.photo[ctx.message.photo.length - 1]; // highest quality
+  const fileUrl = await ctx.telegram.getFileLink(photo.file_id);
+
+  await sendTyping(ctx, 3000);
+  const extractedText = await extractTextFromFile(fileUrl.href);
+
+  if (!extractedText) return ctx.reply("⚠️ Couldn't read the image. Try again.");
+
+  const userData = getUserData(userId);
+  userData.messages.push({ role: 'user', content: extractedText });
+
+  const aiReply = await getGSAnswer(userData.messages);
+  userData.messages.push({ role: 'assistant', content: aiReply });
+
+  await ctx.reply(aiReply);
+
+  // Voice reply
+  const voicePath = `./voice_${userId}.mp3`;
+  const voiceFile = await textToVoice(aiReply, voicePath);
+  if (voiceFile) await ctx.replyWithVoice({ source: voiceFile });
+});
+
+// Handle document upload (PDF, TXT)
+bot.on('document', async (ctx) => {
+  const doc = ctx.message.document;
+  const fileUrl = await ctx.telegram.getFileLink(doc.file_id);
+
+  await sendTyping(ctx, 3000);
+  const extractedText = await extractTextFromFile(fileUrl.href);
+
+  if (!extractedText) return ctx.reply("⚠️ Couldn't read the document. Try again.");
+
+  const userId = ctx.from.id;
+  const userData = getUserData(userId);
+  userData.messages.push({ role: 'user', content: extractedText });
+
+  const aiReply = await getGSAnswer(userData.messages);
+  userData.messages.push({ role: 'assistant', content: aiReply });
+
+  await ctx.reply(aiReply);
+
+  // Voice reply
+  const voicePath = `./voice_${userId}.mp3`;
+  const voiceFile = await textToVoice(aiReply, voicePath);
+  if (voiceFile) await ctx.replyWithVoice({ source: voiceFile });
+});
+
+// Error handling
+bot.catch((err) => console.error('Bot error:', err));
+
+// Launch bot
+bot.launch();
+console.log("🚀 Expo AI Bot running...");
+
+// Enable graceful stop
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
