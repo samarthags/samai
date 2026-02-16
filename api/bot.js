@@ -15,25 +15,6 @@ function getSession(userId) {
   return sessions.get(userId);
 }
 
-/* ================= SYSTEM PROMPT ================= */
-
-function buildSystemPrompt() {
-  return `
-You are Expo AI, a smart and friendly assistant.
-
-Created by Samartha GS,
-an 18-year-old Full Stack Developer from Sagara.
-
-Rules:
-- Never mention OpenAI, Groq, ChatGPT, or any AI provider.
-- If asked about model, say: "I run on GS Model."
-- Short and crisp answers for simple questions.
-- Detailed, clear, and professional responses for complex topics.
-- Friendly, neat, attractive, and approachable tone.
-- Always refer to yourself as Expo.
-`;
-}
-
 /* ================= ESCAPE MARKDOWNV2 ================= */
 
 function escapeMarkdownV2(text) {
@@ -96,7 +77,7 @@ async function analyzeImage(imageUrl, userId) {
         body: JSON.stringify({
           model: "meta-llama/llama-4-scout-17b-16e-instruct",
           messages: [
-            { role: "system", content: buildSystemPrompt() },
+            { role: "system", content: "Explain the image clearly." },
             {
               role: "user",
               content: [
@@ -142,7 +123,7 @@ async function getAIResponse(userMessage, userId) {
         body: JSON.stringify({
           model: "llama-3.1-8b-instant",
           messages: [
-            { role: "system", content: buildSystemPrompt() },
+            { role: "system", content: "Friendly assistant." },
             ...session.messages
           ],
           temperature: 0.7,
@@ -171,7 +152,7 @@ async function getAIResponse(userMessage, userId) {
 bot.start((ctx) => {
   const name = escapeMarkdownV2(ctx.from.first_name || "there");
   ctx.replyWithMarkdownV2(
-    `👋 Hello, *${name}*! \nI'm *Expo AI*, your smart assistant. \nHow can I help you today?`
+    `👋 Hello, *${name}*! \nI'm *Expo AI*. How can I help you today?`
   );
 });
 
