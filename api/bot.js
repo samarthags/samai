@@ -161,12 +161,9 @@ Always introduce yourself as Expo and mention you use SGS-1.2 Cloud Model if ask
   }
 }
 
-/* ================= WELCOME MESSAGE ================= */
 bot.start((ctx) => {
   const name = ctx.from.first_name || "there";
-  ctx.reply(
-    `Hello ${name}! I'm Expo, a realistic AI assistant developed by Samartha GS. You can ask me anything!`
-  );
+  ctx.reply(`Hi *${name}*. Expo here. Ask me anything.`, { parse_mode: "Markdown" });
 });
 
 /* ================= MESSAGE HANDLER ================= */
