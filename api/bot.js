@@ -1,24 +1,59 @@
 import { Telegraf } from "telegraf";
+import fs from "fs";
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
-
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const OCR_API_KEY = process.env.OCR_API_KEY;
+const ADMIN_ID = process.env.ADMIN_ID;
 
-/* ========= MEMORY ========= */
-const sessions = new Map();
-const getSession = (id) => {
-  if (!sessions.has(id)) sessions.set(id, []);
-  return sessions.get(id);
-};
+/* ========= DATABASE ========= */
+const DB_FILE = "/tmp/sessions.json";
+
+function loadDB() {
+  try {
+    return JSON.parse(fs.readFileSync(DB_FILE));
+  } catch {
+    return {};
+  }
+}
+
+function saveDB(data) {
+  fs.writeFileSync(DB_FILE, JSON.stringify(data));
+}
+
+let sessions = loadDB();
+
+function getSession(id) {
+  if (!sessions[id]) sessions[id] = [];
+  return sessions[id];
+}
 
 /* ========= MODELS ========= */
 const MODELS = [
+  "llama-3.1-70b-versatile",
   "llama-3.1-8b-instant",
-  "llama-3.1-70b-versatile"
+  "mixtral-8x7b-32768"
 ];
 
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+/* ========= SMART DELAY ========= */
+function getTypingDelay(text) {
+  if (!text) return 800;
+  const length = text.length;
+
+  if (length < 50) return 800;
+  if (length < 150) return 1500;
+  if (length < 300) return 2500;
+  return 3500;
+}
+
+/* ========= FORMAT ========= */
+function formatReply(text) {
+  if (!text) return text;
+
+  // simple formatting cleanup
+  return text
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 /* ========= AI ========= */
 async function getAIResponse(userId, message) {
@@ -45,18 +80,17 @@ async function getAIResponse(userId, message) {
               {
                 role: "system",
                 content: `
-You are Expo — an AI developed by Samartha GS (18, Sagara).
+You are Expo, an AI assistant.
 
 Style:
-- Friendly, human-like
-- Smart but simple
-- Short answers for simple questions
-- Detailed for complex
-- Use Markdown formatting
+- Clear, direct, and professional
+- Structured answers when needed
+- No unnecessary friendliness
 
 Rules:
-- Never mention APIs or providers
-- If asked about model: "I’m trained by Samartha GS."
+- Do NOT mention creator unless asked
+- If asked "who created you" → "Samartha GS created me."
+- If asked "what are you" → "I am Expo, an AI assistant."
 `,
               },
               ...history,
@@ -72,14 +106,16 @@ Rules:
       const reply = data.choices?.[0]?.message?.content;
       history.push({ role: "assistant", content: reply });
 
-      return reply;
+      saveDB(sessions);
+
+      return formatReply(reply);
 
     } catch {
       continue;
     }
   }
 
-  return "⚠️ Expo is having trouble responding.";
+  return "Error: Unable to respond.";
 }
 
 /* ========= TELEGRAM FILE ========= */
@@ -94,7 +130,7 @@ async function getFileUrl(fileId) {
 /* ========= VOICE ========= */
 async function speechToText(fileUrl) {
   try {
-    const audio = await fetch(fileUrl).then(r => r.arrayBuffer());
+    const audio = await fetch(fileUrl).then(r => r.arrayBuffer();
 
     const form = new FormData();
     form.append("file", new Blob([audio]), "audio.ogg");
@@ -119,95 +155,93 @@ async function speechToText(fileUrl) {
   }
 }
 
-/* ========= OCR ========= */
-async function extractTextFromImage(imageUrl) {
-  try {
-    const res = await fetch(
-      `https://api.ocr.space/parse/imageurl?apikey=${OCR_API_KEY}&url=${encodeURIComponent(imageUrl)}`
-    );
+/* ========= ADMIN ========= */
+bot.command("stats", (ctx) => {
+  if (ctx.from.id.toString() !== ADMIN_ID) return;
 
-    const data = await res.json();
-    return data?.ParsedResults?.[0]?.ParsedText || null;
+  const users = Object.keys(sessions).length;
+  ctx.reply(`Users: ${users}`);
+});
 
-  } catch {
-    return null;
-  }
-}
+bot.command("broadcast", async (ctx) => {
+  if (ctx.from.id.toString() !== ADMIN_ID) return;
 
-/* ========= IMAGE HANDLER ========= */
-async function handleImage(userId, imageUrl) {
-  const text = await extractTextFromImage(imageUrl);
-
-  if (text && text.trim().length > 5) {
-    return await getAIResponse(
-      userId,
-      `Solve or explain this:\n${text}`
-    );
+  const msg = ctx.message.text.split(" ").slice(1).join(" ");
+  for (const userId of Object.keys(sessions)) {
+    try {
+      await bot.telegram.sendMessage(userId, msg);
+    } catch {}
   }
 
-  return await getAIResponse(
-    userId,
-    `Describe this image clearly and help the user:\n${imageUrl}`
-  );
-}
+  ctx.reply("Broadcast sent.");
+});
 
 /* ========= START ========= */
 bot.start(async (ctx) => {
-  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-  await delay(2000);
+  const name = ctx.from.first_name || "there";
 
-  ctx.reply(
-    `Hey ${ctx.from.first_name} 👋\nI'm *Expo*. Send text, voice or image.`,
-    { parse_mode: "Markdown" }
-  );
+  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
+  await new Promise(r => setTimeout(r, 2000));
+
+  ctx.reply(`Hi *${name}*. I am *Expo*. Feel free to ask anything.`, {
+    parse_mode: "Markdown",
+  });
 });
 
 /* ========= MAIN ========= */
 bot.on("message", async (ctx) => {
   const userId = ctx.from.id;
 
-  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-  await delay(1000);
-
   try {
-    /* ===== VOICE ===== */
+    /* IMAGE */
+    if (ctx.message.photo) {
+      return ctx.reply("Image analysis is not supported yet.");
+    }
+
+    /* DOCUMENT */
+    if (ctx.message.document) {
+      return ctx.reply("Document analysis is not supported yet.");
+    }
+
+    /* VOICE */
     if (ctx.message.voice) {
+      await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
+
       const url = await getFileUrl(ctx.message.voice.file_id);
       const text = await speechToText(url);
 
-      if (!text) return ctx.reply("Couldn't understand audio.");
+      if (!text) return ctx.reply("Could not understand audio.");
 
       const reply = await getAIResponse(userId, text);
+
+      await new Promise(r => setTimeout(r, getTypingDelay(reply)));
+
       return ctx.reply(reply, { parse_mode: "Markdown" });
     }
 
-    /* ===== IMAGE ===== */
-    if (ctx.message.photo) {
-      const photo = ctx.message.photo.pop();
-      const url = await getFileUrl(photo.file_id);
-
-      const reply = await handleImage(userId, url);
-      return ctx.reply(reply, { parse_mode: "Markdown" });
-    }
-
-    /* ===== TEXT ===== */
+    /* TEXT */
     if (ctx.message.text) {
+      await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
+
       const reply = await getAIResponse(userId, ctx.message.text);
+
+      await new Promise(r => setTimeout(r, getTypingDelay(reply)));
+
       return ctx.reply(reply, { parse_mode: "Markdown" });
     }
 
   } catch (err) {
     console.error(err);
-    ctx.reply("⚠️ Error occurred.");
+    ctx.reply("Error occurred.");
   }
 });
 
-/* ========= WEBHOOK HANDLER ========= */
+/* ========= HANDLER ========= */
 export default async function handler(req, res) {
   if (req.method === "POST") {
     await bot.handleUpdate(req.body);
     res.status(200).send("ok");
   } else {
-    res.status(200).send("Expo AI running 🚀");
+    res.status(200).send("Expo AI running");
   }
 }
