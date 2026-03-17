@@ -1,9 +1,10 @@
 import { Telegraf } from "telegraf";
 import fetch from "node-fetch";
+import FormData from "form-data";
 
-// Initialize bot
+// Init bot
 const bot = new Telegraf(process.env.BOT_TOKEN);
-const SGS_API_KEY = process.env.SGS_API_KEY; // Your SGS Cloud API key
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 /* ================= MEMORY ================= */
 const sessions = new Map();
@@ -18,27 +19,17 @@ function getSession(userId) {
 /* ================= SYSTEM PROMPT ================= */
 function buildSystemPrompt() {
   return `
-You are Expo, a super-realistic AI assistant that can answer anything.
+You are Expo, a super-realistic AI assistant.
 
-About Expo:
-- Developed by Samartha GS, an 18-year-old student from Sagara. Website: samarthags.in
-- Uses SGS-1.2 Cloud Model
-- Friendly, professional, and approachable
-- Can answer any general, technical, coding, math, history, or personal question
-
-Rules:
-- Always refer to yourself as Expo
-- If asked about your AI model, say: "I run on SGS-1.2 Cloud Model."
+- Developed by Samartha GS
+- Friendly and professional
 - Short answers for simple questions
-- Detailed, step-by-step answers for complex questions
-- Always be polite, clear, and realistic
-- Handle text, voice, images, and documents
-- If unsure, say: "I’m not sure, but I can help you find out."
-- Make the user feel like they are chatting with a real assistant
+- Detailed answers for complex ones
+- Always call yourself Expo
 `;
 }
 
-/* ================= TELEGRAM FILE URL ================= */
+/* ================= TELEGRAM FILE ================= */
 async function getTelegramFileUrl(fileId) {
   const res = await fetch(
     `https://api.telegram.org/bot${process.env.BOT_TOKEN}/getFile?file_id=${fileId}`
@@ -49,67 +40,32 @@ async function getTelegramFileUrl(fileId) {
   return `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${filePath}`;
 }
 
-/* ================= VOICE TO TEXT ================= */
+/* ================= VOICE → TEXT ================= */
 async function speechToText(audioUrl) {
   try {
-    const audioResponse = await fetch(audioUrl);
-    const audioBuffer = await audioResponse.arrayBuffer();
+    const audioRes = await fetch(audioUrl);
+    const buffer = await audioRes.arrayBuffer();
 
-    const formData = new FormData();
-    formData.append("file", new Blob([audioBuffer]), "voice.ogg");
-    formData.append("model", "whisper-large-v3");
+    const form = new FormData();
+    form.append("file", Buffer.from(buffer), "voice.ogg");
+    form.append("model", "whisper-large-v3");
 
-    const response = await fetch(
-      "https://api.sgscloud.com/v1/audio/transcriptions",
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${SGS_API_KEY}` },
-        body: formData,
-      }
-    );
-
-    const data = await response.json();
-    return data.text;
-  } catch (err) {
-    console.error("Voice Recognition Error:", err);
-    return null;
-  }
-}
-
-/* ================= IMAGE ANALYSIS ================= */
-async function analyzeImage(imageUrl, userId) {
-  try {
-    const response = await fetch(
-      "https://api.sgscloud.com/v1/chat/completions",
+    const res = await fetch(
+      "https://api.groq.com/openai/v1/audio/transcriptions",
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${SGS_API_KEY}`,
-          "Content-Type": "application/json",
+          Authorization: `Bearer ${GROQ_API_KEY}`,
         },
-        body: JSON.stringify({
-          model: "sgs-1.2-cloud",
-          messages: [
-            { role: "system", content: buildSystemPrompt() },
-            {
-              role: "user",
-              content: [
-                { type: "text", text: "Explain this image in a friendly and clear way." },
-                { type: "image_url", image_url: { url: imageUrl } },
-              ],
-            },
-          ],
-          temperature: 0.7,
-          max_tokens: 1200,
-        }),
+        body: form,
       }
     );
 
-    const data = await response.json();
-    return data.choices?.[0]?.message?.content || "I couldn't analyze this image.";
+    const data = await res.json();
+    return data.text;
   } catch (err) {
-    console.error("Image Analysis Error:", err);
-    return "Image analysis failed.";
+    console.error(err);
+    return null;
   }
 }
 
@@ -122,51 +78,46 @@ async function getAIResponse(userMessage, userId) {
     session.messages = session.messages.slice(-20);
   }
 
-  const enhancedMessage = `
-${userMessage}
-Answer in a friendly, realistic way as Expo.
-Short answers for simple questions, detailed answers for complex questions.
-Always introduce yourself as Expo and mention you use SGS-1.2 Cloud Model if asked.
-`;
-
   try {
-    const response = await fetch(
-      "https://api.sgscloud.com/v1/chat/completions",
+    const res = await fetch(
+      "https://api.groq.com/openai/v1/chat/completions",
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${SGS_API_KEY}`,
+          Authorization: `Bearer ${GROQ_API_KEY}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "sgs-1.2-cloud",
+          model: "llama3-70b-8192", // best Groq model
           messages: [
             { role: "system", content: buildSystemPrompt() },
             ...session.messages,
-            { role: "user", content: enhancedMessage },
           ],
           temperature: 0.7,
-          max_tokens: 2000,
         }),
       }
     );
 
-    const data = await response.json();
-    const reply = data.choices?.[0]?.message?.content || "Expo encountered an error.";
+    const data = await res.json();
+    const reply =
+      data.choices?.[0]?.message?.content || "Expo error occurred.";
+
     session.messages.push({ role: "assistant", content: reply });
+
     return reply;
   } catch (err) {
-    console.error("AI Response Error:", err);
-    return "Expo encountered an error.";
+    console.error(err);
+    return "Expo error occurred.";
   }
 }
 
+/* ================= START ================= */
 bot.start((ctx) => {
   const name = ctx.from.first_name || "there";
-  ctx.reply(`Hi *${name}*. I am *Expo*. Feel free to ask anything.`, { parse_mode: "Markdown" });
+  ctx.reply(`Hi ${name}, I am Expo 🤖`);
 });
 
-/* ================= MESSAGE HANDLER ================= */
+/* ================= MESSAGE ================= */
 bot.on("message", async (ctx) => {
   try {
     const userId = ctx.from.id;
@@ -174,47 +125,44 @@ bot.on("message", async (ctx) => {
 
     // Voice
     if (ctx.message.voice) {
-      const fileId = ctx.message.voice.file_id;
-      const audioUrl = await getTelegramFileUrl(fileId);
-      if (!audioUrl) return ctx.reply("Could not process voice.");
-      const text = await speechToText(audioUrl);
-      if (!text) return ctx.reply("Voice recognition failed.");
+      const fileUrl = await getTelegramFileUrl(
+        ctx.message.voice.file_id
+      );
+      const text = await speechToText(fileUrl);
+
+      if (!text) return ctx.reply("Voice failed");
+
       const reply = await getAIResponse(text, userId);
       return ctx.reply(reply);
     }
 
-    // Photo
+    // Image (Groq doesn't support vision yet)
     if (ctx.message.photo) {
-      const highest = ctx.message.photo[ctx.message.photo.length - 1];
-      const imageUrl = await getTelegramFileUrl(highest.file_id);
-      const reply = await analyzeImage(imageUrl, userId);
-      return ctx.reply(reply);
-    }
-
-    // Document
-    if (ctx.message.document) {
       return ctx.reply(
-        `📄 Document received: ${ctx.message.document.file_name}\nAdvanced document analysis coming soon.`
+        "📷 Image received. Vision support coming soon."
       );
     }
 
     // Text
     if (ctx.message.text) {
-      const reply = await getAIResponse(ctx.message.text, userId);
+      const reply = await getAIResponse(
+        ctx.message.text,
+        userId
+      );
       return ctx.reply(reply);
     }
   } catch (err) {
     console.error(err);
-    ctx.reply("Unexpected error occurred.");
+    ctx.reply("Error occurred");
   }
 });
 
-/* ================= WEBHOOK HANDLER ================= */
+/* ================= WEBHOOK ================= */
 export default async function handler(req, res) {
   if (req.method === "POST") {
     await bot.handleUpdate(req.body);
     res.status(200).send("ok");
   } else {
-    res.status(200).send("Expo AI Running By Samartha Gs 🚀");
+    res.send("Expo running 🚀");
   }
 }
