@@ -1,12 +1,24 @@
-import { Telegraf } from "telegraf";
-import fetch from "node-fetch";
+// index.js
 
+import { Telegraf } from "telegraf";
+
+// Use native fetch (Node 18+)
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-/* ===== SIMPLE AI FUNCTION ===== */
-async function getAIResponse(message) {
+/* ===== START COMMAND ===== */
+bot.start((ctx) => {
+  ctx.reply("Hello! I am Expo 🤖\nSend me any message.");
+});
+
+/* ===== TEXT HANDLER ===== */
+bot.on("text", async (ctx) => {
   try {
+    const userMessage = ctx.message.text;
+
+    // Show typing
+    await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
+
     const res = await fetch(
       "https://api.groq.com/openai/v1/chat/completions",
       {
@@ -16,49 +28,48 @@ async function getAIResponse(message) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "llama3-8b-8192", // fast + reliable
+          model: "llama3-8b-8192",
           messages: [
             {
               role: "system",
-              content: "You are a helpful AI assistant named Expo.",
+              content: "You are Expo, a helpful and friendly AI assistant.",
             },
             {
               role: "user",
-              content: message,
+              content: userMessage,
             },
           ],
+          temperature: 0.7,
         }),
       }
     );
 
     const data = await res.json();
-    console.log("Groq Response:", data); // DEBUG
 
-    return data.choices?.[0]?.message?.content || "No response from AI.";
-  } catch (err) {
-    console.error("ERROR:", err);
-    return "Error talking to AI.";
+    // DEBUG (see errors in terminal)
+    console.log("STATUS:", res.status);
+    console.log("RESPONSE:", JSON.stringify(data, null, 2));
+
+    // Handle API error
+    if (!res.ok) {
+      return ctx.reply(
+        `❌ API Error: ${data.error?.message || "Unknown error"}`
+      );
+    }
+
+    const reply =
+      data.choices?.[0]?.message?.content ||
+      "❌ No response from AI";
+
+    ctx.reply(reply);
+
+  } catch (error) {
+    console.error("ERROR:", error);
+    ctx.reply("❌ Something went wrong.");
   }
-}
-
-/* ===== START ===== */
-bot.start((ctx) => {
-  ctx.reply("Hello! I am Expo 🤖");
 });
 
-/* ===== TEXT HANDLER ===== */
-bot.on("text", async (ctx) => {
-  const userText = ctx.message.text;
-
-  // show typing
-  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-
-  const reply = await getAIResponse(userText);
-
-  ctx.reply(reply);
-});
-
-/* ===== LAUNCH ===== */
+/* ===== START BOT ===== */
 bot.launch();
 
-console.log("Bot is running 🚀");
+console.log("🚀 Bot is running...");
