@@ -3,7 +3,7 @@ import { Telegraf } from "telegraf";
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-/* ========= SIMPLE MEMORY ========= */
+/* ========= MEMORY ========= */
 const sessions = new Map();
 
 function getSession(userId) {
@@ -12,6 +12,14 @@ function getSession(userId) {
   }
   return sessions.get(userId);
 }
+
+/* ========= MODELS LIST ========= */
+const MODELS = [
+  "llama-3.1-8b-instant",
+  "llama-3.1-70b-versatile",
+  "mixtral-8x7b-32768",
+  "gemma2-9b-it"
+];
 
 /* ========= AI FUNCTION ========= */
 async function getAIResponse(userId, message) {
@@ -23,54 +31,61 @@ async function getAIResponse(userId, message) {
     history.splice(0, history.length - 10);
   }
 
-  try {
-    const res = await fetch(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${GROQ_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "llama3-8b-8192",
-          messages: [
-            {
-              role: "system",
-              content: "You are Expo, a friendly AI assistant.",
-            },
-            ...history,
-          ],
-          temperature: 0.7,
-        }),
+  for (const model of MODELS) {
+    try {
+      console.log("Trying model:", model);
+
+      const res = await fetch(
+        "https://api.groq.com/openai/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${GROQ_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are Expo, a smart, friendly, human-like AI assistant. Keep answers natural, clear, and helpful.",
+              },
+              ...history,
+            ],
+            temperature: 0.7,
+          }),
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        console.log("❌ Failed:", model, data.error?.message);
+        continue;
       }
-    );
 
-    const data = await res.json();
+      const reply =
+        data.choices?.[0]?.message?.content ||
+        "No response from AI";
 
-    console.log("Groq:", JSON.stringify(data, null, 2));
+      history.push({ role: "assistant", content: reply });
 
-    if (!res.ok) {
-      return `❌ API Error: ${data.error?.message}`;
+      return reply;
+
+    } catch (err) {
+      console.log("❌ Error with model:", model);
+      continue;
     }
-
-    const reply =
-      data.choices?.[0]?.message?.content ||
-      "❌ No response from AI";
-
-    history.push({ role: "assistant", content: reply });
-
-    return reply;
-  } catch (err) {
-    console.error(err);
-    return "❌ Error connecting to AI";
   }
+
+  return "❌ All AI models failed. Try again later.";
 }
 
-/* ========= COMMANDS ========= */
+/* ========= START ========= */
 bot.start((ctx) => {
   ctx.reply(
-    `🤖 *Expo AI Bot*\n\nHi ${ctx.from.first_name}!\nAsk me anything 🚀`,
+    `🤖 *Expo AI*\n\nHi ${ctx.from.first_name}!\nAsk me anything 🚀`,
     { parse_mode: "Markdown" }
   );
 });
@@ -94,7 +109,7 @@ bot.on("text", async (ctx) => {
   }
 });
 
-/* ========= ERROR HANDLING ========= */
+/* ========= ERROR ========= */
 bot.catch((err) => console.error("Bot Error:", err));
 
 /* ========= VERCEL HANDLER ========= */
@@ -108,6 +123,6 @@ export default async function handler(req, res) {
       res.status(500).send("error");
     }
   } else {
-    res.status(200).send("Expo AI Bot is running 🚀");
+    res.status(200).send("Expo AI Bot running 🚀");
   }
 }
