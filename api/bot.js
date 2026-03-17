@@ -1,59 +1,22 @@
 import { Telegraf } from "telegraf";
-import fs from "fs";
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const ADMIN_ID = process.env.ADMIN_ID;
 
-/* ========= DATABASE ========= */
-const DB_FILE = "/tmp/sessions.json";
-
-function loadDB() {
-  try {
-    return JSON.parse(fs.readFileSync(DB_FILE));
-  } catch {
-    return {};
-  }
-}
-
-function saveDB(data) {
-  fs.writeFileSync(DB_FILE, JSON.stringify(data));
-}
-
-let sessions = loadDB();
-
-function getSession(id) {
-  if (!sessions[id]) sessions[id] = [];
-  return sessions[id];
-}
+/* ========= MEMORY ========= */
+const sessions = new Map();
+const getSession = (id) => {
+  if (!sessions.has(id)) sessions.set(id, []);
+  return sessions.get(id);
+};
 
 /* ========= MODELS ========= */
 const MODELS = [
-  "llama-3.1-70b-versatile",
   "llama-3.1-8b-instant",
-  "mixtral-8x7b-32768"
+  "llama-3.1-70b-versatile"
 ];
 
-/* ========= SMART DELAY ========= */
-function getTypingDelay(text) {
-  if (!text) return 800;
-  const length = text.length;
-
-  if (length < 50) return 800;
-  if (length < 150) return 1500;
-  if (length < 300) return 2500;
-  return 3500;
-}
-
-/* ========= FORMAT ========= */
-function formatReply(text) {
-  if (!text) return text;
-
-  // simple formatting cleanup
-  return text
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* ========= AI ========= */
 async function getAIResponse(userId, message) {
@@ -84,13 +47,21 @@ You are Expo, an AI assistant.
 
 Style:
 - Clear, direct, and professional
-- Structured answers when needed
 - No unnecessary friendliness
+- No emojis unless needed
+- Short answers for simple questions
+- Detailed answers only when needed
 
 Rules:
-- Do NOT mention creator unless asked
-- If asked "who created you" → "Samartha GS created me."
-- If asked "what are you" → "I am Expo, an AI assistant."
+- Do NOT mention creator or model unless asked
+- Do NOT self-promote
+- Focus only on answering the question
+
+If user asks:
+- "Who created you?" → Say: "Samartha GS created me."
+- "What are you?" → Say: "I am Expo, an AI assistant that answers questions."
+
+Never mention APIs or backend systems.
 `,
               },
               ...history,
@@ -106,9 +77,7 @@ Rules:
       const reply = data.choices?.[0]?.message?.content;
       history.push({ role: "assistant", content: reply });
 
-      saveDB(sessions);
-
-      return formatReply(reply);
+      return reply;
 
     } catch {
       continue;
@@ -130,7 +99,7 @@ async function getFileUrl(fileId) {
 /* ========= VOICE ========= */
 async function speechToText(fileUrl) {
   try {
-    const audio = await fetch(fileUrl).then(r => r.arrayBuffer();
+    const audio = await fetch(fileUrl).then(r => r.arrayBuffer());
 
     const form = new FormData();
     form.append("file", new Blob([audio]), "audio.ogg");
@@ -155,78 +124,51 @@ async function speechToText(fileUrl) {
   }
 }
 
-/* ========= ADMIN ========= */
-bot.command("stats", (ctx) => {
-  if (ctx.from.id.toString() !== ADMIN_ID) return;
-
-  const users = Object.keys(sessions).length;
-  ctx.reply(`Users: ${users}`);
-});
-
-bot.command("broadcast", async (ctx) => {
-  if (ctx.from.id.toString() !== ADMIN_ID) return;
-
-  const msg = ctx.message.text.split(" ").slice(1).join(" ");
-  for (const userId of Object.keys(sessions)) {
-    try {
-      await bot.telegram.sendMessage(userId, msg);
-    } catch {}
-  }
-
-  ctx.reply("Broadcast sent.");
-});
-
 /* ========= START ========= */
 bot.start(async (ctx) => {
   const name = ctx.from.first_name || "there";
 
   await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-  await new Promise(r => setTimeout(r, 2000));
+  await delay(2000);
 
-  ctx.reply(`Hi *${name}*. I am *Expo*. Feel free to ask anything.`, {
-    parse_mode: "Markdown",
-  });
+  ctx.reply(
+    `Hi *${name}*. I am *Expo*. Feel free to ask anything.`,
+    { parse_mode: "Markdown" }
+  );
 });
 
 /* ========= MAIN ========= */
 bot.on("message", async (ctx) => {
   const userId = ctx.from.id;
 
+  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
+  await delay(1000);
+
   try {
-    /* IMAGE */
-    if (ctx.message.photo) {
-      return ctx.reply("Image analysis is not supported yet.");
-    }
-
-    /* DOCUMENT */
-    if (ctx.message.document) {
-      return ctx.reply("Document analysis is not supported yet.");
-    }
-
-    /* VOICE */
+    /* ===== VOICE ===== */
     if (ctx.message.voice) {
-      await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-
       const url = await getFileUrl(ctx.message.voice.file_id);
       const text = await speechToText(url);
 
       if (!text) return ctx.reply("Could not understand audio.");
 
       const reply = await getAIResponse(userId, text);
-
-      await new Promise(r => setTimeout(r, getTypingDelay(reply)));
-
       return ctx.reply(reply, { parse_mode: "Markdown" });
     }
 
-    /* TEXT */
+    /* ===== IMAGE ===== */
+    if (ctx.message.photo) {
+      return ctx.reply("Image analysis is not supported yet.");
+    }
+
+    /* ===== DOCUMENT ===== */
+    if (ctx.message.document) {
+      return ctx.reply("Document analysis is not supported yet.");
+    }
+
+    /* ===== TEXT ===== */
     if (ctx.message.text) {
-      await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-
       const reply = await getAIResponse(userId, ctx.message.text);
-
-      await new Promise(r => setTimeout(r, getTypingDelay(reply)));
-
       return ctx.reply(reply, { parse_mode: "Markdown" });
     }
 
@@ -236,7 +178,7 @@ bot.on("message", async (ctx) => {
   }
 });
 
-/* ========= HANDLER ========= */
+/* ========= WEBHOOK ========= */
 export default async function handler(req, res) {
   if (req.method === "POST") {
     await bot.handleUpdate(req.body);
