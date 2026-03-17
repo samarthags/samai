@@ -163,7 +163,7 @@ Always introduce yourself as Expo and mention you use SGS-1.2 Cloud Model if ask
 
 bot.start((ctx) => {
   const name = ctx.from.first_name || "there";
-  ctx.reply(`Hi *${name}*. Expo here. Ask me anything.`, { parse_mode: "Markdown" });
+  ctx.reply(`Hi *${name}*. I am *Expo*. Feel free to ask anything.`, { parse_mode: "Markdown" });
 });
 
 /* ================= MESSAGE HANDLER ================= */
@@ -215,6 +215,6 @@ export default async function handler(req, res) {
     await bot.handleUpdate(req.body);
     res.status(200).send("ok");
   } else {
-    res.status(200).send("Expo AI Running 🚀");
+    res.status(200).send("Expo AI Running By Samartha Gs 🚀");
   }
 }
