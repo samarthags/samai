@@ -3,85 +3,40 @@ import { Telegraf } from "telegraf";
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-/* ========= MEMORY ========= */
+// Sessions for history
 const sessions = new Map();
 const getSession = (id) => {
   if (!sessions.has(id)) sessions.set(id, []);
   return sessions.get(id);
 };
 
-/* ========= MODELS ========= */
-const MODELS = [
-  "llama-3.1-8b-instant",
-  "llama-3.1-70b-versatile"
-];
-
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/* ========= AI ========= */
-async function getAIResponse(userId, message) {
+async function getAIResponse(userId, messages) {
   const history = getSession(userId);
-  history.push({ role: "user", content: message });
+  history.push(...messages);
+  if (history.length > 12) history.splice(0, history.length - 12);
 
-  if (history.length > 12) {
-    history.splice(0, history.length - 12);
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "meta-llama/llama-4-scout-17b-16e-instruct", 
+        input: history
+      }),
+    });
+    const data = await res.json();
+    return data.output_text || "Sorry, I couldn’t understand.";
+  } catch (e) {
+    console.error(e);
+    return "Error: Unable to respond.";
   }
-
-  for (const model of MODELS) {
-    try {
-      const res = await fetch(
-        "https://api.groq.com/openai/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${GROQ_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model,
-            messages: [
-              {
-                role: "system",
-                content: `
-You are Expo, an AI assistant.
-
-Style:
-- Conversational, clear, and insightful
-- Respond intelligently to image URLs + captions
-- Explain things when needed, but stay concise
-- Avoid unnecessary emojis unless contextually relevant
-
-Rules:
-- Do NOT mention APIs or backend systems
-- Do NOT self-promote
-- If asked about your creator → "Samartha GS created me."
-- If asked what you are → "I am Expo, an AI assistant that answers questions."
-`,
-              },
-              ...history,
-            ],
-            temperature: 0.8,
-          }),
-        }
-      );
-
-      const data = await res.json();
-      if (!res.ok) continue;
-
-      const reply = data.choices?.[0]?.message?.content;
-      history.push({ role: "assistant", content: reply });
-
-      return reply;
-
-    } catch {
-      continue;
-    }
-  }
-
-  return "Error: Unable to respond.";
 }
 
-/* ========= TELEGRAM FILE ========= */
 async function getFileUrl(fileId) {
   const res = await fetch(
     `https://api.telegram.org/bot${process.env.BOT_TOKEN}/getFile?file_id=${fileId}`
@@ -90,11 +45,9 @@ async function getFileUrl(fileId) {
   return `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${data.result.file_path}`;
 }
 
-/* ========= VOICE ========= */
 async function speechToText(fileUrl) {
   try {
-    const audio = await fetch(fileUrl).then(r => r.arrayBuffer());
-
+    const audio = await fetch(fileUrl).then((r) => r.arrayBuffer());
     const form = new FormData();
     form.append("file", new Blob([audio]), "audio.ogg");
     form.append("model", "whisper-large-v3");
@@ -109,80 +62,73 @@ async function speechToText(fileUrl) {
         body: form,
       }
     );
-
     const data = await res.json();
     return data.text;
-
   } catch {
     return null;
   }
 }
 
-/* ========= START ========= */
-bot.start(async (ctx) => {
+bot.start((ctx) => {
   const name = ctx.from.first_name || "there";
-
-  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-  await delay(1500);
-
   ctx.reply(
-    `Hi *${name}*, I am *Expo*. Ask me anything, send a voice message, or send a photo with a caption like "What car is this?" and I'll answer intelligently.`,
+    `Hi *${name}*! Send me a photo with a question like "What car is this?" or just text/voice and I’ll answer.`,
     { parse_mode: "Markdown" }
   );
 });
 
-/* ========= MAIN MESSAGE HANDLER ========= */
 bot.on("message", async (ctx) => {
-  const userId = ctx.from.id;
-
   await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-  await delay(1000);
+  await delay(800);
 
   try {
-    /* ===== VOICE ===== */
+    // ===== Voice =====
     if (ctx.message.voice) {
       const url = await getFileUrl(ctx.message.voice.file_id);
       const text = await speechToText(url);
-
-      if (!text) return ctx.reply("Could not understand audio.");
-
-      const reply = await getAIResponse(userId, text);
-      return ctx.reply(reply, { parse_mode: "Markdown" });
+      if (!text) return ctx.reply("Could not understand voice.");
+      const reply = await getAIResponse(ctx.from.id, [
+        { role: "user", content: text }
+      ]);
+      return ctx.reply(reply);
     }
 
-    /* ===== IMAGE + CAPTION ===== */
+    // ===== Image + Caption =====
     if (ctx.message.photo) {
-      const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
-      const url = await getFileUrl(fileId);
+      const photo = ctx.message.photo.slice(-1)[0];
+      const url = await getFileUrl(photo.file_id);
+      const caption = ctx.message.caption || "Describe this image.";
 
-      // Get user's caption or default prompt
-      const userText = ctx.message.caption || "Describe this image.";
+      const history = [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: caption },
+            {
+              type: "image_url",
+              image_url: { url }
+            }
+          ]
+        }
+      ];
 
-      // Send both caption + image URL to AI
-      const prompt = `${userText}\n\nImage URL: ${url}`;
-      const reply = await getAIResponse(userId, prompt);
-
-      return ctx.reply(reply, { parse_mode: "Markdown" });
+      const reply = await getAIResponse(ctx.from.id, history);
+      return ctx.reply(reply);
     }
 
-    /* ===== DOCUMENT ===== */
-    if (ctx.message.document) {
-      return ctx.reply("Document analysis is not supported yet.");
-    }
-
-    /* ===== TEXT ONLY ===== */
+    // ===== Text Only =====
     if (ctx.message.text) {
-      const reply = await getAIResponse(userId, ctx.message.text);
-      return ctx.reply(reply, { parse_mode: "Markdown" });
+      const reply = await getAIResponse(ctx.from.id, [
+        { role: "user", content: ctx.message.text }
+      ]);
+      return ctx.reply(reply);
     }
-
   } catch (err) {
     console.error(err);
     ctx.reply("Error occurred.");
   }
 });
 
-/* ========= WEBHOOK ========= */
 export default async function handler(req, res) {
   if (req.method === "POST") {
     await bot.handleUpdate(req.body);
