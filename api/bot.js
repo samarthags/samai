@@ -2,33 +2,29 @@ import { Telegraf } from "telegraf";
 import fs from "fs";
 import path from "path";
 
-// ===== Load Environment Variables =====
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-// ===== Load Local Knowledge =====
+/* ========= LOAD KNOWLEDGE ========= */
 const knowledgePath = path.join(process.cwd(), "knowledge.json");
 let localKnowledge = [];
 
 try {
-  const data = fs.readFileSync(knowledgePath, "utf-8");
-  localKnowledge = JSON.parse(data);
-  console.log("Local knowledge loaded:", localKnowledge.length, "entries");
-} catch (err) {
-  console.error("Error loading knowledge.json:", err);
+  localKnowledge = JSON.parse(fs.readFileSync(knowledgePath, "utf-8"));
+} catch {
+  console.log("No knowledge file found.");
 }
 
-// ===== User Memory =====
+/* ========= MEMORY ========= */
 const sessions = new Map();
 const getSession = (id) => {
   if (!sessions.has(id)) sessions.set(id, []);
   return sessions.get(id);
 };
 
-const MODELS = ["llama-3.1-8b-instant", "llama-3.1-70b-versatile"];
-const delay = (ms) => new Promise((res) => setTimeout(res, ms));
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ===== Telegram Helper =====
+/* ========= TELEGRAM FILE ========= */
 async function getFileUrl(fileId) {
   const res = await fetch(
     `https://api.telegram.org/bot${process.env.BOT_TOKEN}/getFile?file_id=${fileId}`
@@ -37,7 +33,7 @@ async function getFileUrl(fileId) {
   return `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${data.result.file_path}`;
 }
 
-// ===== Voice to Text =====
+/* ========= VOICE ========= */
 async function speechToText(fileUrl) {
   try {
     const audio = await fetch(fileUrl).then(r => r.arrayBuffer());
@@ -53,127 +49,192 @@ async function speechToText(fileUrl) {
         body: form,
       }
     );
+
     const data = await res.json();
     return data.text;
-  } catch (err) {
-    console.error(err);
+  } catch {
     return null;
   }
 }
 
-// ===== AI Response with Local Knowledge as Hints =====
+/* ========= IMAGE ANALYSIS ========= */
+async function analyzeImage(imageUrl, caption) {
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-70b-versatile",
+        messages: [
+          {
+            role: "system",
+            content: "You analyze images based on user description and give accurate answers."
+          },
+          {
+            role: "user",
+            content: `Image URL: ${imageUrl}\nUser message: ${caption || "No description"}`
+          }
+        ],
+        temperature: 0.7,
+      }),
+    });
+
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content;
+  } catch {
+    return "Couldn't analyze the image properly.";
+  }
+}
+
+/* ========= KNOWLEDGE HINT ========= */
+function getKnowledgeHints() {
+  return localKnowledge
+    .map(k => `${k.name}: ${k.description}`)
+    .join("\n");
+}
+
+/* ========= AI ========= */
 async function getAIResponse(userId, message) {
   const history = getSession(userId);
   history.push({ role: "user", content: message });
 
   if (history.length > 12) history.splice(0, history.length - 12);
 
-  // Convert local knowledge into hints for AI
-  const knowledgeHints = localKnowledge
-    .map(item => `${item.name}: ${item.description}`)
-    .join("\n");
-
+  const knowledgeHints = getKnowledgeHints();
   const lower = message.toLowerCase();
 
-  // Identity questions
-  if (lower.includes("who are you") || lower.includes("what are you")) {
-    return "I am Expo, a virtual AI assistant created by Samartha GS using the SGS model.";
+  /* ===== Identity ===== */
+  if (lower.includes("who are you")) {
+    return "I am Expo, a virtual AI assistant created by Samartha GS.";
   }
-  if (lower.includes("who developed you") || lower.includes("who created you")) {
-    return "Expo was developed by Samartha GS using the SGS model.";
+  if (lower.includes("who created you")) {
+    return "Expo was created by Samartha GS.";
   }
 
-  // System prompt with local knowledge hints
+  /* ===== SYSTEM PROMPT ===== */
   const systemMessage = `
-You are Expo, a friendly and advanced AI assistant.
-- Use the following local knowledge as context to answer questions naturally:
+You are Expo, a smart and professional AI assistant.
+
+STYLE:
+- Clear, confident, natural
+- Not robotic
+- Explain like a human teacher when needed
+- Short for simple questions, detailed for complex ones
+
+BEHAVIOR:
+- Always attempt to answer
+- If unclear, ask a smart follow-up instead of saying "I don't understand"
+- Combine multiple knowledge points if relevant
+
+LOCAL KNOWLEDGE:
 ${knowledgeHints}
-- Always answer all questions using AI reasoning.
-- Step-by-step explanations for technical or educational questions.
-- Concise for simple questions, detailed for complex ones.
-- Maintain context of last 12 messages.
-- Only mention Samartha GS if explicitly asked.
-- Never mention APIs, backend, or the knowledge file directly.
+
+RULES:
+- Do not mention backend or APIs
+- Only mention Samartha GS if asked
 `;
 
-  for (const model of MODELS) {
-    try {
-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${GROQ_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: "system", content: systemMessage },
-            ...history,
-          ],
-          temperature: 0.8,
-        }),
-      });
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-70b-versatile",
+        messages: [
+          { role: "system", content: systemMessage },
+          ...history,
+        ],
+        temperature: 0.85,
+      }),
+    });
 
-      const data = await res.json();
-      if (!res.ok) continue;
+    const data = await res.json();
+    const reply = data.choices?.[0]?.message?.content;
 
-      const reply = data.choices?.[0]?.message?.content;
-      history.push({ role: "assistant", content: reply });
-      return reply;
-    } catch (err) {
-      console.error(err);
-      continue;
+    if (!reply) {
+      return "I didn’t fully get that. Can you rephrase or add more details?";
     }
-  }
 
-  return "Sorry, I couldn't understand that.";
+    history.push({ role: "assistant", content: reply });
+    return reply;
+
+  } catch {
+    return "Something went wrong. Try again.";
+  }
 }
 
-// ===== Start Command =====
-bot.start(async (ctx) => {
-  const name = ctx.from.first_name || "there";
-  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-  await delay(1000);
+/* ========= COMMANDS ========= */
+bot.command("help", (ctx) => {
   ctx.reply(
-    `Hi *${name}*! I am Expo, your advanced AI assistant. You can ask me anything via text or voice.`,
-    { parse_mode: "Markdown" }
+    `Commands:
+/help - Show commands
+/reset - Clear chat memory
+/about - About Expo`
   );
 });
 
-// ===== Main Message Handler =====
+bot.command("reset", (ctx) => {
+  sessions.delete(ctx.from.id);
+  ctx.reply("Memory cleared.");
+});
+
+bot.command("about", (ctx) => {
+  ctx.reply("I am Expo, an AI assistant created by Samartha GS.");
+});
+
+/* ========= START ========= */
+bot.start((ctx) => {
+  ctx.reply("Hi, I am Expo. Ask me anything.");
+});
+
+/* ========= MAIN ========= */
 bot.on("message", async (ctx) => {
   const userId = ctx.from.id;
+
   await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
   await delay(500);
 
   try {
-    // Voice messages
+    /* ===== VOICE ===== */
     if (ctx.message.voice) {
       const url = await getFileUrl(ctx.message.voice.file_id);
       const text = await speechToText(url);
-      if (!text) return ctx.reply("Could not understand the voice message.");
+
+      if (!text) return ctx.reply("Couldn't understand voice.");
 
       const reply = await getAIResponse(userId, text);
-      return ctx.reply(reply, { parse_mode: "Markdown" });
+      return ctx.reply(reply);
     }
 
-    // Text messages
+    /* ===== IMAGE ===== */
+    if (ctx.message.photo) {
+      const fileId = ctx.message.photo.pop().file_id;
+      const url = await getFileUrl(fileId);
+      const caption = ctx.message.caption || "";
+
+      const reply = await analyzeImage(url, caption);
+      return ctx.reply(reply);
+    }
+
+    /* ===== TEXT ===== */
     if (ctx.message.text) {
       const reply = await getAIResponse(userId, ctx.message.text);
-      return ctx.reply(reply, { parse_mode: "Markdown" });
+      return ctx.reply(reply);
     }
 
-    // Other types
-    if (ctx.message.photo || ctx.message.document) {
-      return ctx.reply("Currently, only text and voice messages are supported.");
-    }
   } catch (err) {
     console.error(err);
-    ctx.reply("An error occurred while processing your message.");
+    ctx.reply("Error occurred.");
   }
 });
 
-// ===== Webhook =====
+/* ========= WEBHOOK ========= */
 export default async function handler(req, res) {
   if (req.method === "POST") {
     await bot.handleUpdate(req.body);
