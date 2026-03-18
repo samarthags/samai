@@ -1,47 +1,18 @@
 import { Telegraf } from "telegraf";
-import mongoose from "mongoose";
+import fetch from "node-fetch";
+import { MongoClient } from "mongodb";
 
-// ====== ENV VARIABLES ======
-const BOT_TOKEN = process.env.BOT_TOKEN;
+const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const MONGO_URI = process.env.MONGO_URI;
 
-// ====== CONNECT MONGO ======
-mongoose.connect(MONGO_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-}).then(() => console.log("✅ MongoDB connected"))
-  .catch(err => console.error("❌ MongoDB error:", err));
+// ---------------- MONGO ----------------
+const client = new MongoClient(MONGO_URI);
+await client.connect();
+const db = client.db("expo_bot");
+const usersCol = db.collection("users"); // stores user info
 
-// ====== SCHEMAS ======
-const userSchema = new mongoose.Schema({
-  telegramId: { type: Number, unique: true },
-  name: String,
-  joinedAt: { type: Date, default: Date.now },
-});
-
-const reminderSchema = new mongoose.Schema({
-  userId: Number,
-  message: String,
-  triggerTime: Date,
-});
-
-const User = mongoose.model("User", userSchema);
-const Reminder = mongoose.model("Reminder", reminderSchema);
-
-// ====== BOT ======
-const bot = new Telegraf(BOT_TOKEN);
-const sessions = new Map();
-const lastMessages = new Map(); // for regenerate
-
-// ====== MODELS ======
-const MODELS = [
-  "llama-3.1-70b-versatile",
-  "llama-3.1-8b-instant",
-  "mixtral-8x7b-32768"
-];
-
-// ====== HELPERS ======
+// ---------------- HELPERS ----------------
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 function typingDelay(text) {
   if (!text) return 800;
@@ -51,68 +22,103 @@ function typingDelay(text) {
   return 3500;
 }
 
+// ---------------- LANGUAGE DETECT ----------------
 function detectLang(text) {
   if (/^[\u0900-\u097F]/.test(text)) return "Hindi";
   if (/^[\u0C80-\u0CFF]/.test(text)) return "Kannada";
   return "English";
 }
 
-function getSession(id) {
-  if (!sessions.has(id)) sessions.set(id, []);
-  return sessions.get(id);
+// ---------------- MODELS ----------------
+const MODELS = [
+  "llama-3.1-70b-versatile",
+  "llama-3.1-8b-instant",
+  "mixtral-8x7b-32768",
+];
+
+// ---------------- MONGO USER HELPERS ----------------
+async function saveUser(user) {
+  const now = new Date();
+  await usersCol.updateOne(
+    { userId: user.id },
+    {
+      $set: {
+        name: user.first_name || "Unknown",
+        lastSeen: now,
+        isActive: true,
+      },
+      $setOnInsert: {
+        userId: user.id,
+        joinedAt: now,
+        messagesCount: 0,
+        tags: [],
+      },
+    },
+    { upsert: true }
+  );
 }
 
-// ====== AI CALL ======
-async function getAI(userId, message, extra = "") {
-  const history = getSession(userId);
-  history.push({ role: "user", content: message });
-  if (history.length > 10) history.splice(0, history.length - 10);
+async function incrementMessages(userId) {
+  await usersCol.updateOne(
+    { userId },
+    { $inc: { messagesCount: 1 }, $set: { lastSeen: new Date() } }
+  );
+}
 
+async function getAllUsers() {
+  return usersCol.find({}).toArray();
+}
+
+// ---------------- AI ----------------
+async function getAI(userId, message, extra = "") {
   const lang = detectLang(message);
 
   for (const model of MODELS) {
     try {
-      const res = await fetch(
-        "https://api.groq.com/openai/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${GROQ_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model,
-            messages: [
-              {
-                role: "system",
-                content: `
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${GROQ_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: "system",
+              content: `
 You are Expo, an AI assistant.
 
 Rules:
 - Reply in ${lang}
-- Clear answers
+- Clear, structured answers
+- No self-promotion
 - If asked creator → say Samartha GS
-${extra}`,
-              },
-              ...history,
-            ],
-          }),
-        }
-      );
+${extra}
+`,
+            },
+            { role: "user", content: message },
+          ],
+        }),
+      });
+
       const data = await res.json();
       if (!res.ok) continue;
+
       const reply = data.choices?.[0]?.message?.content;
-      history.push({ role: "assistant", content: reply });
-      lastMessages.set(userId, message);
+      if (!reply) continue;
+
+      await incrementMessages(userId);
       return reply;
-    } catch {
+    } catch (err) {
       continue;
     }
   }
+
   return "Error: AI not responding.";
 }
 
-// ====== BUTTONS ======
+// ---------------- BUTTONS ----------------
 function buttons() {
   return {
     reply_markup: {
@@ -127,92 +133,61 @@ function buttons() {
   };
 }
 
-// ====== REMINDERS ======
-async function scheduleReminder(reminder) {
-  const delayMs = reminder.triggerTime.getTime() - Date.now();
-  if (delayMs <= 0) return;
-  setTimeout(async () => {
-    try {
-      await bot.telegram.sendMessage(
-        reminder.userId,
-        `⏰ Reminder: ${reminder.message}`
-      );
-      await Reminder.deleteOne({ _id: reminder._id });
-    } catch (err) {
-      console.error("Reminder error:", err);
-    }
-  }, delayMs);
-}
-
+// ---------------- REMINDER ----------------
 bot.command("remind", async (ctx) => {
   const text = ctx.message.text.split(" ").slice(1).join(" ");
-  const match = text.match(/(.+) at (\d{1,2}:\d{2}) (\d{1,2}-\d{1,2}-\d{4})/);
-  if (!match)
-    return ctx.reply(
-      "Use: /remind <message> at <HH:MM> <DD-MM-YYYY>\nExample: /remind Drink water at 22:00 22-03-2026"
-    );
+  const match = text.match(/(\d+)(s|m|h)\s(.+)/);
+  if (!match) return ctx.reply("Use: /remind 10m do homework");
 
-  const msg = match[1];
-  const timeStr = match[2];
-  const dateStr = match[3];
+  const time = parseInt(match[1]);
+  const unit = match[2];
+  const msg = match[3];
 
-  const [hours, minutes] = timeStr.split(":").map(Number);
-  const [day, month, year] = dateStr.split("-").map(Number);
+  let ms = time * 1000;
+  if (unit === "m") ms = time * 60000;
+  if (unit === "h") ms = time * 3600000;
 
-  const triggerTime = new Date(year, month - 1, day, hours, minutes);
-
-  const reminder = new Reminder({
-    userId: ctx.chat.id,
-    message: msg,
-    triggerTime,
-  });
-  await reminder.save();
-  scheduleReminder(reminder);
-
-  ctx.reply(`⏰ Reminder set for ${triggerTime.toLocaleString()}`);
+  ctx.reply(`⏰ Reminder set for ${time}${unit}`);
+  setTimeout(() => ctx.reply(`⏰ Reminder: ${msg}`), ms);
 });
 
-// ====== START ======
+// ---------------- START ----------------
 bot.start(async (ctx) => {
   const name = ctx.from.first_name || "there";
-
-  // Save user to Mongo
-  await User.findOneAndUpdate(
-    { telegramId: ctx.from.id },
-    { telegramId: ctx.from.id, name },
-    { upsert: true }
-  );
+  await saveUser(ctx.from);
 
   await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
   await delay(2000);
+
   ctx.reply(`Hi *${name}*. I am *Expo*. Feel free to ask anything.`, {
     parse_mode: "Markdown",
   });
 });
 
-// ====== CALLBACK ======
+// ---------------- CALLBACK QUERY ----------------
 bot.on("callback_query", async (ctx) => {
   const userId = ctx.from.id;
-  const last = lastMessages.get(userId);
-  if (!last) return ctx.answerCbQuery("No previous message.");
 
   let extra = "";
   if (ctx.callbackQuery.data === "more") extra = "Give a detailed explanation.";
   if (ctx.callbackQuery.data === "short") extra = "Give a short answer.";
   if (ctx.callbackQuery.data === "regen") extra = "Give a different answer.";
 
-  const reply = await getAI(userId, last, extra);
+  const reply = await getAI(userId, "Repeat last query", extra);
   await ctx.editMessageText(reply, { ...buttons(), parse_mode: "Markdown" });
 });
 
-// ====== MAIN MESSAGE HANDLER ======
+// ---------------- MESSAGE HANDLER ----------------
 bot.on("message", async (ctx) => {
   const userId = ctx.from.id;
+  await saveUser(ctx.from);
 
   try {
-    if (ctx.message.photo) return ctx.reply("SamServer can't analyze images yet.");
+    if (ctx.message.photo)
+      return ctx.reply("SamServer can't analyze images yet.");
     if (ctx.message.document)
       return ctx.reply("📎 File received. Advanced file analysis coming soon.");
+
     if (ctx.message.text) {
       await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
       const reply = await getAI(userId, ctx.message.text);
@@ -225,12 +200,25 @@ bot.on("message", async (ctx) => {
   }
 });
 
-// ====== WEBHOOK HANDLER ======
+// ---------------- BROADCAST FUNCTION ----------------
+export async function broadcastMessage(text) {
+  const users = await getAllUsers();
+  for (const user of users) {
+    try {
+      await bot.telegram.sendMessage(user.userId, text, { parse_mode: "Markdown" });
+    } catch (err) {
+      console.error(`Failed to send to ${user.userId}:`, err.message);
+    }
+  }
+}
+
+// ---------------- VERCEL HANDLER ----------------
 export default async function handler(req, res) {
   if (req.method === "POST") {
     await bot.handleUpdate(req.body);
-    res.status(200).send("ok");
-  } else {
-    res.status(200).send("Expo AI Running 🚀");
+    return res.status(200).send("ok");
   }
+  res.status(200).send("Expo AI Running 🚀");
 }
+
+console.log("🤖 Expo AI Bot Loaded with MongoDB (users only)!");
