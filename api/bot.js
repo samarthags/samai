@@ -45,14 +45,14 @@ async function speechToText(fileUrl) {
   }
 }
 
-// ===== AI Response =====
+// ===== AI Response with improved context =====
 async function getAIResponse(userId, message) {
   const history = getSession(userId);
   history.push({ role: "user", content: message });
 
   if (history.length > 12) history.splice(0, history.length - 12);
 
-  // Hard-coded special questions
+  // Hard-coded personal identity answers
   const lower = message.toLowerCase();
   if (lower.includes("who are you") || lower.includes("what are you")) {
     return "I am Expo, a virtual AI assistant created by Samartha GS using the SGS model.";
@@ -61,15 +61,16 @@ async function getAIResponse(userId, message) {
     return "Expo was developed by Samartha GS using the SGS model.";
   }
 
-  // System prompt with improvements
+  // System prompt with better educational guidance and coding support
   const systemMessage = `
 You are Expo, a professional AI assistant.
-- Friendly and helpful, but clear and concise.
-- Provide short answers for simple queries.
-- Provide detailed answers for complex queries.
-- Maintain context of the last 12 messages for follow-ups.
+- Friendly and helpful, but always professional.
+- Provide short answers for simple questions.
+- Provide detailed, linked answers for complex queries.
+- Maintain context of the last 12 messages.
+- Detect coding, project, or profile-related questions and answer with examples or guidance.
 - Never mention APIs or backend systems.
-- Only mention Samartha GS if explicitly asked.
+- Mention Samartha GS only when explicitly asked.
 `;
 
   for (const model of MODELS) {
@@ -112,7 +113,7 @@ bot.start(async (ctx) => {
   await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
   await delay(1000);
   ctx.reply(
-    `Hi *${name}*! I am Expo, your AI assistant. You can ask me anything via text or voice.`,
+    `Hi *${name}*! I am Expo, your AI assistant. You can ask me anything via text or voice, including coding questions or project guidance.`,
     { parse_mode: "Markdown" }
   );
 });
