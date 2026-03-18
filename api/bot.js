@@ -1,36 +1,29 @@
 import { Telegraf } from "telegraf";
-import mongoose from "mongoose";
+import fetch from "node-fetch";
+import fs from "fs";
+import path from "path";
+import axios from "axios";
 
-// === ENV VARIABLES ===
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const MONGO_URI = process.env.MONGO_URI;
 
-// === MONGODB SETUP ===
-mongoose.connect(MONGO_URI).then(() => console.log("MongoDB connected"));
+/* ========= MEMORY ========= */
+const sessions = new Map();
+const lastMessages = new Map();
 
-const sessionSchema = new mongoose.Schema({
-  userId: Number,
-  firstName: String,
-  history: Array, // AI conversation history
-});
-const Session = mongoose.model("Session", sessionSchema);
+function getSession(id) {
+  if (!sessions.has(id)) sessions.set(id, []);
+  return sessions.get(id);
+}
 
-const reminderSchema = new mongoose.Schema({
-  userId: Number,
-  message: String,
-  remindAt: Date,
-});
-const Reminder = mongoose.model("Reminder", reminderSchema);
-
-// === MODELS ===
+/* ========= MODELS ========= */
 const MODELS = [
   "llama-3.1-70b-versatile",
   "llama-3.1-8b-instant",
   "mixtral-8x7b-32768"
 ];
 
-// === HELPERS ===
+/* ========= HELPERS ========= */
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function typingDelay(text) {
@@ -47,21 +40,11 @@ function detectLang(text) {
   return "English";
 }
 
-// === SESSION HANDLER ===
-async function getSession(userId, firstName = "there") {
-  let session = await Session.findOne({ userId });
-  if (!session) {
-    session = await Session.create({ userId, firstName, history: [] });
-  }
-  return session;
-}
-
-// === AI HANDLER ===
+/* ========= AI FUNCTION ========= */
 async function getAI(userId, message, extra = "") {
-  const session = await getSession(userId);
-  session.history.push({ role: "user", content: message });
-
-  if (session.history.length > 10) session.history.splice(0, session.history.length - 10);
+  const history = getSession(userId);
+  history.push({ role: "user", content: message });
+  if (history.length > 10) history.splice(0, history.length - 10);
 
   const lang = detectLang(message);
 
@@ -81,17 +64,16 @@ async function getAI(userId, message, extra = "") {
               {
                 role: "system",
                 content: `
-You are Expo, an AI assistant.
-
+You are Expo, a friendly AI assistant trained by Samartha GS.
 Rules:
-- Reply in ${lang}
-- Clear, structured answers
-- No self-promotion
-- If asked creator → say Samartha GS
+- Reply clearly and helpfully in ${lang}.
+- Friendly and polite tone.
+- Avoid self-promotion.
+- If asked creator → say Samartha GS.
 ${extra}
 `,
               },
-              ...session.history,
+              ...history,
             ],
           }),
         }
@@ -101,118 +83,83 @@ ${extra}
       if (!res.ok) continue;
 
       const reply = data.choices?.[0]?.message?.content;
-
-      session.history.push({ role: "assistant", content: reply });
-      await session.save();
-
+      history.push({ role: "assistant", content: reply });
+      lastMessages.set(userId, message);
       return reply;
-
-    } catch (err) {
-      console.error(err);
+    } catch {
       continue;
     }
   }
 
-  return "Error: AI not responding.";
+  return "Sorry, I couldn't respond. Try again later.";
 }
 
-// === BUTTONS ===
-function buttons() {
-  return {
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: "Explain More", callback_data: "more" },
-          { text: "Short", callback_data: "short" },
-        ],
-        [
-          { text: "🔁 Regenerate", callback_data: "regen" }
-        ]
-      ],
-    },
-  };
-}
-
-// === REMINDER HANDLER ===
-bot.command("remind", async (ctx) => {
-  const text = ctx.message.text.split(" ").slice(1).join(" ");
-  const userId = ctx.from.id;
-
-  // Expect format: "10m Drink water" or "22-03-2026 22:00 Drink water"
-  const timeMatch = text.match(/(\d{1,2}-\d{1,2}-\d{4} \d{1,2}:\d{2})\s(.+)/);
-  const relativeMatch = text.match(/(\d+)(s|m|h)\s(.+)/);
-
-  let remindAt, msg;
-
-  if (timeMatch) {
-    remindAt = new Date(timeMatch[1]);
-    msg = timeMatch[2];
-  } else if (relativeMatch) {
-    const time = parseInt(relativeMatch[1]);
-    const unit = relativeMatch[2];
-    msg = relativeMatch[3];
-    let ms = time * 1000;
-    if (unit === "m") ms = time * 60000;
-    if (unit === "h") ms = time * 3600000;
-    remindAt = new Date(Date.now() + ms);
-  } else {
-    return ctx.reply("Use /remind 10m Drink water OR /remind 22-03-2026 22:00 Drink water");
-  }
-
-  await Reminder.create({ userId, message: msg, remindAt });
-  ctx.reply(`⏰ Reminder set for ${remindAt.toLocaleString()}`);
-});
-
-// === START ===
+/* ========= START ========= */
 bot.start(async (ctx) => {
   const name = ctx.from.first_name || "there";
-  await getSession(ctx.from.id, name);
-
   await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
   await delay(2000);
-
   ctx.reply(`Hi *${name}*. I am *Expo*. Feel free to ask anything.`, { parse_mode: "Markdown" });
 });
 
-// === CALLBACKS ===
-bot.on("callback_query", async (ctx) => {
-  const userId = ctx.from.id;
-  const session = await getSession(userId);
-  const last = session.history.slice(-1)[0]?.content;
+/* ========= DOWNLOAD FILE ========= */
+async function downloadFile(fileId, dest) {
+  const fileUrl = await bot.telegram.getFileLink(fileId);
+  const response = await axios.get(fileUrl.href, { responseType: "stream" });
+  const writer = fs.createWriteStream(dest);
+  response.data.pipe(writer);
+  return new Promise((resolve, reject) => {
+    writer.on("finish", () => resolve(dest));
+    writer.on("error", reject);
+  });
+}
 
-  if (!last) return ctx.answerCbQuery("No previous message.");
-
-  let extra = "";
-  if (ctx.callbackQuery.data === "more") extra = "Give a detailed explanation.";
-  if (ctx.callbackQuery.data === "short") extra = "Give a short answer.";
-  if (ctx.callbackQuery.data === "regen") extra = "Give a different answer.";
-
-  const reply = await getAI(userId, last, extra);
-  await ctx.editMessageText(reply, { ...buttons(), parse_mode: "Markdown" });
-});
-
-// === MAIN MESSAGE HANDLER ===
+/* ========= MAIN MESSAGE HANDLER ========= */
 bot.on("message", async (ctx) => {
   const userId = ctx.from.id;
 
   try {
-    if (ctx.message.photo) return ctx.reply("SamServer can't analyze images yet.");
-    if (ctx.message.document) return ctx.reply("📎 File received. Advanced file analysis coming soon.");
+    /* IMAGE ANALYSIS */
+    if (ctx.message.photo) {
+      const photo = ctx.message.photo.pop(); // highest quality
+      const tempPath = path.join("/tmp", `${photo.file_id}.jpg`);
+      await downloadFile(photo.file_id, tempPath);
 
+      await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
+      const reply = await getAI(userId, `Analyze this image: [binary file at ${tempPath}]`);
+      await delay(typingDelay(reply));
+      fs.unlinkSync(tempPath);
+      return ctx.reply(reply);
+    }
+
+    /* AUDIO ANALYSIS */
+    if (ctx.message.voice || ctx.message.audio) {
+      const fileId = ctx.message.voice?.file_id || ctx.message.audio?.file_id;
+      const ext = ctx.message.audio ? path.extname(ctx.message.audio.file_name) : ".ogg";
+      const tempPath = path.join("/tmp", `${fileId}${ext}`);
+      await downloadFile(fileId, tempPath);
+
+      await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
+      const reply = await getAI(userId, `Analyze this audio: [binary file at ${tempPath}]`);
+      await delay(typingDelay(reply));
+      fs.unlinkSync(tempPath);
+      return ctx.reply(reply);
+    }
+
+    /* TEXT ANALYSIS */
     if (ctx.message.text) {
       await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
       const reply = await getAI(userId, ctx.message.text);
       await delay(typingDelay(reply));
-      return ctx.reply(reply, { ...buttons(), parse_mode: "Markdown" });
+      return ctx.reply(reply);
     }
-
   } catch (err) {
     console.error(err);
-    ctx.reply("Error occurred.");
+    ctx.reply("An error occurred. Try again later.");
   }
 });
 
-// === VERCEL HANDLER ===
+/* ========= HANDLER ========= */
 export default async function handler(req, res) {
   if (req.method === "POST") {
     await bot.handleUpdate(req.body);
@@ -221,18 +168,3 @@ export default async function handler(req, res) {
     res.status(200).send("Expo AI Running 🚀");
   }
 }
-
-// === REMINDER CHECKER ===
-// Poll reminders every minute
-setInterval(async () => {
-  const now = new Date();
-  const due = await Reminder.find({ remindAt: { $lte: now } });
-  for (const r of due) {
-    try {
-      await bot.telegram.sendMessage(r.userId, `⏰ Reminder: ${r.message}`);
-      await Reminder.deleteOne({ _id: r._id });
-    } catch (err) {
-      console.error(err);
-    }
-  }
-}, 60000);
