@@ -37,6 +37,7 @@ async function getFileUrl(fileId) {
 async function speechToText(fileUrl) {
   try {
     const audio = await fetch(fileUrl).then(r => r.arrayBuffer());
+
     const form = new FormData();
     form.append("file", new Blob([audio]), "audio.ogg");
     form.append("model", "whisper-large-v3");
@@ -54,38 +55,6 @@ async function speechToText(fileUrl) {
     return data.text;
   } catch {
     return null;
-  }
-}
-
-/* ========= IMAGE ANALYSIS ========= */
-async function analyzeImage(imageUrl, caption) {
-  try {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${GROQ_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "llama-3.1-70b-versatile",
-        messages: [
-          {
-            role: "system",
-            content: "You analyze images based on user description and give accurate answers."
-          },
-          {
-            role: "user",
-            content: `Image URL: ${imageUrl}\nUser message: ${caption || "No description"}`
-          }
-        ],
-        temperature: 0.7,
-      }),
-    });
-
-    const data = await res.json();
-    return data.choices?.[0]?.message?.content;
-  } catch {
-    return "Couldn't analyze the image properly.";
   }
 }
 
@@ -174,7 +143,7 @@ bot.command("help", (ctx) => {
   ctx.reply(
     `Commands:
 /help - Show commands
-/reset - Clear chat memory
+/reset - Clear memory
 /about - About Expo`
   );
 });
@@ -212,21 +181,14 @@ bot.on("message", async (ctx) => {
       return ctx.reply(reply);
     }
 
-    /* ===== IMAGE ===== */
-    if (ctx.message.photo) {
-      const fileId = ctx.message.photo.pop().file_id;
-      const url = await getFileUrl(fileId);
-      const caption = ctx.message.caption || "";
-
-      const reply = await analyzeImage(url, caption);
-      return ctx.reply(reply);
-    }
-
     /* ===== TEXT ===== */
     if (ctx.message.text) {
       const reply = await getAIResponse(userId, ctx.message.text);
       return ctx.reply(reply);
     }
+
+    /* ===== OTHER ===== */
+    return ctx.reply("Send text or voice message only.");
 
   } catch (err) {
     console.error(err);
