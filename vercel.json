@@ -1,17 +1,8 @@
 {
-  "version": 2,
-  "builds": [
-    {
-      "src": "api/bot.js",
-      "use": "@vercel/node"
-    }
-  ],
   "routes": [
     {
-      "src": "/(.*)",
-      "dest": "/api/bot"
+      "src": "/api/bot",
+      "dest": "/api/bot.js"
     }
-  ],
-  "buildCommand": "npm install",
-  "outputDirectory": "."
+  ]
 }
