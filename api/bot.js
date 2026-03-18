@@ -3,13 +3,7 @@ import { Telegraf } from "telegraf";
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-// ===== Memory per user =====
-const sessions = new Map();
-const getSession = (id) => {
-  if (!sessions.has(id)) sessions.set(id, []);
-  return sessions.get(id);
-};
-
+// ===== Helper: delay =====
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ===== Helper: get Telegram file URL =====
@@ -21,7 +15,7 @@ async function getFileUrl(fileId) {
   return `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${data.result.file_path}`;
 }
 
-// ===== Helper: convert voice to text =====
+// ===== Helper: speech-to-text for voice messages =====
 async function speechToText(fileUrl) {
   try {
     const audio = await fetch(fileUrl).then((r) => r.arrayBuffer());
@@ -37,6 +31,7 @@ async function speechToText(fileUrl) {
         body: form,
       }
     );
+
     const data = await res.json();
     return data.text;
   } catch {
@@ -44,12 +39,8 @@ async function speechToText(fileUrl) {
   }
 }
 
-// ===== AI response using Groq =====
-async function getAIResponse(userId, inputs) {
-  const history = getSession(userId);
-  history.push(...inputs);
-  if (history.length > 12) history.splice(0, history.length - 12);
-
+// ===== Helper: call Groq Responses API =====
+async function getAIResponse(inputArray) {
   try {
     const res = await fetch("https://api.groq.com/openai/v1/responses", {
       method: "POST",
@@ -58,10 +49,12 @@ async function getAIResponse(userId, inputs) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "meta-llama/llama-4-scout-17b-16e-instruct", // vision-capable Groq model
-        input: history,
+        model: "meta-llama/llama-4-scout-17b-16e-instruct", // vision-capable
+        input: inputArray,
+        temperature: 0.7,
       }),
     });
+
     const data = await res.json();
     return data.output_text || "Sorry, I couldn't understand.";
   } catch (err) {
@@ -74,14 +67,13 @@ async function getAIResponse(userId, inputs) {
 bot.start((ctx) => {
   const name = ctx.from.first_name || "there";
   ctx.reply(
-    `Hi *${name}*! Send me a text, voice, or photo with a question like "What car is this?" and I will answer intelligently.`,
+    `Hi *${name}*! Send me text, voice, or photo with a question like "What car is this?" and I will answer intelligently.`,
     { parse_mode: "Markdown" }
   );
 });
 
 // ===== Main message handler =====
 bot.on("message", async (ctx) => {
-  const userId = ctx.from.id;
   await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
   await delay(500);
 
@@ -91,9 +83,7 @@ bot.on("message", async (ctx) => {
       const url = await getFileUrl(ctx.message.voice.file_id);
       const text = await speechToText(url);
       if (!text) return ctx.reply("Could not understand voice.");
-      const reply = await getAIResponse(userId, [
-        { role: "user", content: text },
-      ]);
+      const reply = await getAIResponse([{ type: "input_text", text }]);
       return ctx.reply(reply);
     }
 
@@ -103,26 +93,18 @@ bot.on("message", async (ctx) => {
       const url = await getFileUrl(photo.file_id);
       const caption = ctx.message.caption || "Describe this image.";
 
-      // Prepare Groq input: text + image
-      const input = [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: caption },
-            { type: "image_url", image_url: { url } },
-          ],
-        },
+      const inputArray = [
+        { type: "input_text", text: caption },
+        { type: "input_image", image_url: url },
       ];
 
-      const reply = await getAIResponse(userId, input);
+      const reply = await getAIResponse(inputArray);
       return ctx.reply(reply);
     }
 
-    // --- Text messages ---
+    // --- Text only ---
     if (ctx.message.text) {
-      const reply = await getAIResponse(userId, [
-        { role: "user", content: ctx.message.text },
-      ]);
+      const reply = await getAIResponse([{ type: "input_text", text: ctx.message.text }]);
       return ctx.reply(reply);
     }
   } catch (err) {
@@ -131,7 +113,7 @@ bot.on("message", async (ctx) => {
   }
 });
 
-// ===== Webhook handler =====
+// ===== Webhook handler (if using Vercel/Next.js) =====
 export default async function handler(req, res) {
   if (req.method === "POST") {
     await bot.handleUpdate(req.body);
