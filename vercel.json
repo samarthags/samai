@@ -1,8 +1,7 @@
 {
-  "routes": [
-    {
-      "src": "/api/bot",
-      "dest": "/api/bot.js"
+  "functions": {
+    "api/*.js": {
+      "runtime": "@vercel/node"
     }
-  ]
+  }
 }
