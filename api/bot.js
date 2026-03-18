@@ -61,30 +61,21 @@ async function speechToText(fileUrl) {
   }
 }
 
-// ===== Local Knowledge Search (multi-keyword) =====
-function searchLocalKnowledge(query) {
-  const lower = query.toLowerCase();
-  const results = localKnowledge.filter(item => lower.includes(item.name.toLowerCase()));
-  if (results.length > 0) {
-    return results.map(r => r.description).join("\n\n");
-  }
-  return null;
-}
-
-// ===== AI Response =====
+// ===== AI Response with Local Knowledge as Hints =====
 async function getAIResponse(userId, message) {
   const history = getSession(userId);
   history.push({ role: "user", content: message });
 
   if (history.length > 12) history.splice(0, history.length - 12);
 
-  // 1️⃣ Check local knowledge first
-  const localAnswer = searchLocalKnowledge(message);
-  if (localAnswer) return localAnswer;
+  // Convert local knowledge into hints for AI
+  const knowledgeHints = localKnowledge
+    .map(item => `${item.name}: ${item.description}`)
+    .join("\n");
 
   const lower = message.toLowerCase();
 
-  // 2️⃣ Identity questions
+  // Identity questions
   if (lower.includes("who are you") || lower.includes("what are you")) {
     return "I am Expo, a virtual AI assistant created by Samartha GS using the SGS model.";
   }
@@ -92,17 +83,17 @@ async function getAIResponse(userId, message) {
     return "Expo was developed by Samartha GS using the SGS model.";
   }
 
-  // 3️⃣ System prompt
+  // System prompt with local knowledge hints
   const systemMessage = `
 You are Expo, a friendly and advanced AI assistant.
-- Always answer questions; never say you don't understand unless impossible.
-- Give step-by-step explanations for technical, educational, or project queries.
-- Concise for simple questions; detailed for complex ones.
+- Use the following local knowledge as context to answer questions naturally:
+${knowledgeHints}
+- Always answer all questions using AI reasoning.
+- Step-by-step explanations for technical or educational questions.
+- Concise for simple questions, detailed for complex ones.
 - Maintain context of last 12 messages.
-- Detect coding, AI, or technical questions and provide examples or guidance.
-- Use local knowledge first if relevant.
-- Only mention Samartha GS when explicitly asked.
-- Never mention APIs or backend.
+- Only mention Samartha GS if explicitly asked.
+- Never mention APIs, backend, or the knowledge file directly.
 `;
 
   for (const model of MODELS) {
@@ -128,7 +119,6 @@ You are Expo, a friendly and advanced AI assistant.
 
       const reply = data.choices?.[0]?.message?.content;
       history.push({ role: "assistant", content: reply });
-
       return reply;
     } catch (err) {
       console.error(err);
