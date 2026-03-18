@@ -4,7 +4,7 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 // ===== Helper: delay =====
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
 // ===== Helper: get Telegram file URL =====
 async function getFileUrl(fileId) {
@@ -31,18 +31,18 @@ async function speechToText(fileUrl) {
         body: form,
       }
     );
-
     const data = await res.json();
     return data.text;
-  } catch {
+  } catch (e) {
+    console.error(e);
     return null;
   }
 }
 
-// ===== Helper: call Groq Responses API =====
-async function getAIResponse(inputArray) {
+// ===== Helper: call Groq Responses API (correct universal format) =====
+async function getAIResponseGroq(userInputArray) {
   try {
-    const res = await fetch("https://api.groq.com/openai/v1/responses", {
+    const response = await fetch("https://api.groq.com/openai/v1/responses", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${GROQ_API_KEY}`,
@@ -50,70 +50,90 @@ async function getAIResponse(inputArray) {
       },
       body: JSON.stringify({
         model: "meta-llama/llama-4-scout-17b-16e-instruct", // vision-capable
-        input: inputArray,
+        input: userInputArray,
         temperature: 0.7,
       }),
     });
 
-    const data = await res.json();
-    return data.output_text || "Sorry, I couldn't understand.";
+    const data = await response.json();
+    return data.output_text || "Sorry, I couldn’t understand that.";
   } catch (err) {
     console.error(err);
     return "Error: Unable to respond.";
   }
 }
 
-// ===== Start command =====
+// ===== Start Command =====
 bot.start((ctx) => {
   const name = ctx.from.first_name || "there";
   ctx.reply(
-    `Hi *${name}*! Send me text, voice, or photo with a question like "What car is this?" and I will answer intelligently.`,
+    `Hi *${name}*! Send me text, voice, or photo with a question like "What car is this?" and I will answer.`,
     { parse_mode: "Markdown" }
   );
 });
 
-// ===== Main message handler =====
+// ===== Main Message Handler =====
 bot.on("message", async (ctx) => {
   await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
   await delay(500);
 
   try {
-    // --- Voice messages ---
+    // --- Voice Messages ---
     if (ctx.message.voice) {
       const url = await getFileUrl(ctx.message.voice.file_id);
       const text = await speechToText(url);
-      if (!text) return ctx.reply("Could not understand voice.");
-      const reply = await getAIResponse([{ type: "input_text", text }]);
+      if (!text) return ctx.reply("Could not understand the voice message.");
+
+      const inputArray = [
+        {
+          role: "user",
+          content: [{ type: "input_text", text }],
+        },
+      ];
+
+      const reply = await getAIResponseGroq(inputArray);
       return ctx.reply(reply);
     }
 
-    // --- Photo + caption ---
+    // --- Photo + Caption ---
     if (ctx.message.photo) {
       const photo = ctx.message.photo.slice(-1)[0]; // highest resolution
       const url = await getFileUrl(photo.file_id);
       const caption = ctx.message.caption || "Describe this image.";
 
       const inputArray = [
-        { type: "input_text", text: caption },
-        { type: "input_image", image_url: url },
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: caption },
+            { type: "input_image", image_url: url, detail: "auto" },
+          ],
+        },
       ];
 
-      const reply = await getAIResponse(inputArray);
+      const reply = await getAIResponseGroq(inputArray);
       return ctx.reply(reply);
     }
 
-    // --- Text only ---
+    // --- Text Messages Only ---
     if (ctx.message.text) {
-      const reply = await getAIResponse([{ type: "input_text", text: ctx.message.text }]);
+      const inputArray = [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: ctx.message.text }],
+        },
+      ];
+
+      const reply = await getAIResponseGroq(inputArray);
       return ctx.reply(reply);
     }
   } catch (err) {
     console.error(err);
-    ctx.reply("Error occurred.");
+    ctx.reply("An error occurred while processing your message.");
   }
 });
 
-// ===== Webhook handler (if using Vercel/Next.js) =====
+// ===== Webhook Handler (for serverless deployment) =====
 export default async function handler(req, res) {
   if (req.method === "POST") {
     await bot.handleUpdate(req.body);
