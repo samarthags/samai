@@ -1,54 +1,48 @@
 import { Telegraf } from "telegraf";
 import mongoose from "mongoose";
+import fetch from "node-fetch"; // if you are using node 18+, native fetch works
 
-// ====== ENV VARIABLES ======
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const MONGO_URI = process.env.MONGO_URI;
 
-// ====== CONNECT MONGODB ======
-mongoose.connect(MONGO_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-  .then(() => console.log("✅ MongoDB connected"))
-  .catch((err) => console.error("❌ MongoDB error:", err));
+const bot = new Telegraf(BOT_TOKEN);
 
-// ====== SCHEMAS ======
+// ===== MongoDB =====
+mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log("✅ MongoDB connected"))
+  .catch((err) => console.error("❌ MongoDB connection error:", err));
+
 const userSchema = new mongoose.Schema({
   telegramId: { type: Number, unique: true },
   name: String,
   joinedAt: { type: Date, default: Date.now },
 });
-
 const reminderSchema = new mongoose.Schema({
   userId: Number,
   message: String,
   triggerTime: Date,
 });
-
 const User = mongoose.model("User", userSchema);
 const Reminder = mongoose.model("Reminder", reminderSchema);
 
-// ====== BOT ======
-const bot = new Telegraf(BOT_TOKEN);
+// ===== Memory for sessions =====
 const sessions = new Map();
-const lastMessages = new Map(); // for regenerate
-
+const lastMessages = new Map();
 function getSession(id) {
   if (!sessions.has(id)) sessions.set(id, []);
   return sessions.get(id);
 }
 
-// ====== MODELS ======
+// ===== Models =====
 const MODELS = [
   "llama-3.1-70b-versatile",
   "llama-3.1-8b-instant",
-  "mixtral-8x7b-32768",
+  "mixtral-8x7b-32768"
 ];
 
-// ====== HELPERS ======
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+// ===== Helpers =====
+const delay = (ms) => new Promise(r => setTimeout(r, ms));
 function typingDelay(text) {
   if (!text) return 800;
   if (text.length < 50) return 800;
@@ -56,14 +50,13 @@ function typingDelay(text) {
   if (text.length < 300) return 2500;
   return 3500;
 }
-
 function detectLang(text) {
   if (/^[\u0900-\u097F]/.test(text)) return "Hindi";
   if (/^[\u0C80-\u0CFF]/.test(text)) return "Kannada";
   return "English";
 }
 
-// ====== AI FUNCTION ======
+// ===== AI =====
 async function getAI(userId, message, extra = "") {
   const history = getSession(userId);
   history.push({ role: "user", content: message });
@@ -73,20 +66,18 @@ async function getAI(userId, message, extra = "") {
 
   for (const model of MODELS) {
     try {
-      const res = await fetch(
-        "https://api.groq.com/openai/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${GROQ_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model,
-            messages: [
-              {
-                role: "system",
-                content: `
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${GROQ_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: "system",
+              content: `
 You are Expo, an AI assistant.
 
 Rules:
@@ -94,22 +85,24 @@ Rules:
 - Clear, structured answers
 - No self-promotion
 - If asked creator → say Samartha GS
-${extra}`,
-              },
-              ...history,
-            ],
-          }),
-        }
-      );
+${extra}`
+            },
+            ...history
+          ]
+        })
+      });
 
       const data = await res.json();
-      if (!res.ok) continue;
+      if (!res.ok || !data.choices) continue;
 
-      const reply = data.choices?.[0]?.message?.content;
+      const reply = data.choices[0]?.message?.content || "Error: No reply.";
+
       history.push({ role: "assistant", content: reply });
       lastMessages.set(userId, message);
+
       return reply;
-    } catch {
+    } catch (err) {
+      console.error("AI fetch error:", err);
       continue;
     }
   }
@@ -117,19 +110,19 @@ ${extra}`,
   return "Error: AI not responding.";
 }
 
-// ====== BUTTONS ======
+// ===== Buttons =====
 function buttons() {
   return {
     reply_markup: {
       inline_keyboard: [
         [{ text: "Explain More", callback_data: "more" }, { text: "Short", callback_data: "short" }],
-        [{ text: "🔁 Regenerate", callback_data: "regen" }],
-      ],
-    },
+        [{ text: "🔁 Regenerate", callback_data: "regen" }]
+      ]
+    }
   };
 }
 
-// ====== REMINDERS ======
+// ===== Reminders =====
 async function scheduleReminder(reminder) {
   const delayMs = reminder.triggerTime.getTime() - Date.now();
   if (delayMs <= 0) return;
@@ -146,7 +139,6 @@ async function scheduleReminder(reminder) {
 
 bot.command("remind", async (ctx) => {
   const text = ctx.message.text.split(" ").slice(1).join(" ");
-
   const match = text.match(/(.+) at (\d{1,2}:\d{2}) (\d{1,2}-\d{1,2}-\d{4})/);
   if (!match) return ctx.reply(
     "Use: /remind <message> at <HH:MM> <DD-MM-YYYY>\nExample: /remind Drink water at 22:00 22-03-2026"
@@ -164,11 +156,10 @@ bot.command("remind", async (ctx) => {
   ctx.reply(`⏰ Reminder set for ${triggerTime.toLocaleString()}`);
 });
 
-// ====== START ======
+// ===== Start =====
 bot.start(async (ctx) => {
   const name = ctx.from.first_name || "there";
 
-  // Save user in Mongo
   await User.findOneAndUpdate(
     { telegramId: ctx.from.id },
     { telegramId: ctx.from.id, name },
@@ -180,7 +171,7 @@ bot.start(async (ctx) => {
   ctx.reply(`Hi *${name}*. I am *Expo*. Feel free to ask anything.`, { parse_mode: "Markdown" });
 });
 
-// ====== CALLBACK ======
+// ===== Callback =====
 bot.on("callback_query", async (ctx) => {
   const userId = ctx.from.id;
   const last = lastMessages.get(userId);
@@ -195,7 +186,7 @@ bot.on("callback_query", async (ctx) => {
   await ctx.editMessageText(reply, { ...buttons(), parse_mode: "Markdown" });
 });
 
-// ====== MAIN MESSAGE HANDLER ======
+// ===== Message Handler =====
 bot.on("message", async (ctx) => {
   const userId = ctx.from.id;
 
@@ -214,7 +205,7 @@ bot.on("message", async (ctx) => {
   }
 });
 
-// ====== HANDLER ======
+// ===== Handler =====
 export default async function handler(req, res) {
   if (req.method === "POST") {
     await bot.handleUpdate(req.body);
