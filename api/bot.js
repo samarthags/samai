@@ -3,7 +3,7 @@ import { Telegraf } from "telegraf";
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-// Sessions for history
+// ===== Memory per user =====
 const sessions = new Map();
 const getSession = (id) => {
   if (!sessions.has(id)) sessions.set(id, []);
@@ -12,31 +12,7 @@ const getSession = (id) => {
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function getAIResponse(userId, messages) {
-  const history = getSession(userId);
-  history.push(...messages);
-  if (history.length > 12) history.splice(0, history.length - 12);
-
-  try {
-    const res = await fetch("https://api.groq.com/openai/v1/responses", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${GROQ_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "meta-llama/llama-4-scout-17b-16e-instruct", 
-        input: history
-      }),
-    });
-    const data = await res.json();
-    return data.output_text || "Sorry, I couldn’t understand.";
-  } catch (e) {
-    console.error(e);
-    return "Error: Unable to respond.";
-  }
-}
-
+// ===== Helper: get Telegram file URL =====
 async function getFileUrl(fileId) {
   const res = await fetch(
     `https://api.telegram.org/bot${process.env.BOT_TOKEN}/getFile?file_id=${fileId}`
@@ -45,6 +21,7 @@ async function getFileUrl(fileId) {
   return `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${data.result.file_path}`;
 }
 
+// ===== Helper: convert voice to text =====
 async function speechToText(fileUrl) {
   try {
     const audio = await fetch(fileUrl).then((r) => r.arrayBuffer());
@@ -56,9 +33,7 @@ async function speechToText(fileUrl) {
       "https://api.groq.com/openai/v1/audio/transcriptions",
       {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${GROQ_API_KEY}`,
-        },
+        headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
         body: form,
       }
     );
@@ -69,57 +44,84 @@ async function speechToText(fileUrl) {
   }
 }
 
+// ===== AI response using Groq =====
+async function getAIResponse(userId, inputs) {
+  const history = getSession(userId);
+  history.push(...inputs);
+  if (history.length > 12) history.splice(0, history.length - 12);
+
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "meta-llama/llama-4-scout-17b-16e-instruct", // vision-capable Groq model
+        input: history,
+      }),
+    });
+    const data = await res.json();
+    return data.output_text || "Sorry, I couldn't understand.";
+  } catch (err) {
+    console.error(err);
+    return "Error: Unable to respond.";
+  }
+}
+
+// ===== Start command =====
 bot.start((ctx) => {
   const name = ctx.from.first_name || "there";
   ctx.reply(
-    `Hi *${name}*! Send me a photo with a question like "What car is this?" or just text/voice and I’ll answer.`,
+    `Hi *${name}*! Send me a text, voice, or photo with a question like "What car is this?" and I will answer intelligently.`,
     { parse_mode: "Markdown" }
   );
 });
 
+// ===== Main message handler =====
 bot.on("message", async (ctx) => {
+  const userId = ctx.from.id;
   await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-  await delay(800);
+  await delay(500);
 
   try {
-    // ===== Voice =====
+    // --- Voice messages ---
     if (ctx.message.voice) {
       const url = await getFileUrl(ctx.message.voice.file_id);
       const text = await speechToText(url);
       if (!text) return ctx.reply("Could not understand voice.");
-      const reply = await getAIResponse(ctx.from.id, [
-        { role: "user", content: text }
+      const reply = await getAIResponse(userId, [
+        { role: "user", content: text },
       ]);
       return ctx.reply(reply);
     }
 
-    // ===== Image + Caption =====
+    // --- Photo + caption ---
     if (ctx.message.photo) {
-      const photo = ctx.message.photo.slice(-1)[0];
+      const photo = ctx.message.photo.slice(-1)[0]; // highest resolution
       const url = await getFileUrl(photo.file_id);
       const caption = ctx.message.caption || "Describe this image.";
 
-      const history = [
+      // Prepare Groq input: text + image
+      const input = [
         {
           role: "user",
           content: [
             { type: "text", text: caption },
-            {
-              type: "image_url",
-              image_url: { url }
-            }
-          ]
-        }
+            { type: "image_url", image_url: { url } },
+          ],
+        },
       ];
 
-      const reply = await getAIResponse(ctx.from.id, history);
+      const reply = await getAIResponse(userId, input);
       return ctx.reply(reply);
     }
 
-    // ===== Text Only =====
+    // --- Text messages ---
     if (ctx.message.text) {
-      const reply = await getAIResponse(ctx.from.id, [
-        { role: "user", content: ctx.message.text }
+      const reply = await getAIResponse(userId, [
+        { role: "user", content: ctx.message.text },
       ]);
       return ctx.reply(reply);
     }
@@ -129,6 +131,7 @@ bot.on("message", async (ctx) => {
   }
 });
 
+// ===== Webhook handler =====
 export default async function handler(req, res) {
   if (req.method === "POST") {
     await bot.handleUpdate(req.body);
