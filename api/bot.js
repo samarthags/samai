@@ -75,7 +75,6 @@ async function getAIResponse(userId, message) {
     .map((item) => `${item.name}: ${item.description}`)
     .join("\n");
 
-  // ===== Advanced System Prompt =====
   const systemMessage = `
 You are Expo, an advanced AI assistant.
 
@@ -87,26 +86,26 @@ HOW TO RESPOND:
 - Be clear, direct, and helpful
 
 RESPONSE STYLE:
-- Simple questions → short answers
-- Complex questions → structured explanations
-- Coding → clean, working code
-- Explanations → include examples when useful
+- Simple → short answer
+- Complex → structured explanation
+- Coding → clean working code
+- Explanations → use examples
 
 CONTEXT:
 - Maintain conversation memory
 - Ask follow-up if needed
 
-KNOWLEDGE (internal use only):
+KNOWLEDGE (internal only):
 ${knowledgeHints}
 
 ABOUT EXPO:
-Expo is an AI assistant developed by Samartha GS using the SGS.1 model (October 2024).
+Expo is an AI assistant developed by Samartha Gs using the SGS.1 model (October 2024).
 
 RULES:
 - Do NOT sound robotic
 - Do NOT say "as an AI model"
 - Do NOT mention backend/API/system
-- Only mention Samartha GS if asked
+- Only mention Samartha Gs if asked
 `;
 
   for (const model of MODELS) {
@@ -133,19 +132,40 @@ RULES:
       );
 
       const data = await res.json();
-      if (!res.ok) continue;
 
-      const reply = data.choices?.[0]?.message?.content;
+      // ===== ERROR HANDLING =====
+      if (!res.ok || data.error) {
+        console.error("Groq API Error:", data);
+
+        const errorMsg = data.error?.message || "";
+
+        if (errorMsg.toLowerCase().includes("rate limit")) {
+          return "⚠️ Expo (SGS.1) is currently under high load. Please try again shortly.";
+        }
+
+        if (errorMsg.toLowerCase().includes("quota")) {
+          return "⚠️ Expo (SGS.1) is currently under high load. Please try again shortly.";
+        }
+
+        return "⚠️ Expo (SGS.1) is currently under high load. Please try again shortly.";
+      }
+
+      let reply = data.choices?.[0]?.message?.content || "";
+
+      if (reply.length > 4000) {
+        reply = reply.slice(0, 4000) + "...";
+      }
+
       history.push({ role: "assistant", content: reply });
 
       return reply;
     } catch (err) {
       console.error(err);
-      continue;
+      return "⚠️ Expo (SGS.1) is currently under high load. Please try again shortly.";
     }
   }
 
-  return "Sorry, something went wrong. Try again.";
+  return "⚠️ Expo (SGS.1) is currently under high load. Please try again shortly.";
 }
 
 // ===== Start Command =====
@@ -160,13 +180,40 @@ bot.start(async (ctx) => {
   );
 });
 
+// ===== Help Command =====
+bot.command("help", (ctx) => {
+  ctx.reply(
+    `🤖 *Help*
+
+Use Expo AI to ask anything.
+
+👉 /reset — to clear your memory and all AI context
+
+Just send a message and Expo will respond.`,
+    { parse_mode: "Markdown" }
+  );
+});
+
+// ===== Reset Command =====
+bot.command("reset", (ctx) => {
+  sessions.delete(ctx.from.id);
+
+  ctx.reply(
+    `♻️ *Memory Cleared*
+
+Your conversation memory has been reset.
+Start fresh with Expo now.`,
+    { parse_mode: "Markdown" }
+  );
+});
+
 // ===== Main Message Handler =====
 bot.on("message", async (ctx) => {
   const userId = ctx.from.id;
   await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
 
   try {
-    // ===== Voice =====
+    // Voice
     if (ctx.message.voice) {
       const url = await getFileUrl(ctx.message.voice.file_id);
       const text = await speechToText(url);
@@ -177,13 +224,13 @@ bot.on("message", async (ctx) => {
       return ctx.reply(reply, { parse_mode: "Markdown" });
     }
 
-    // ===== Text =====
+    // Text
     if (ctx.message.text) {
       const reply = await getAIResponse(userId, ctx.message.text);
       return ctx.reply(reply, { parse_mode: "Markdown" });
     }
 
-    // ===== Other Types =====
+    // Others
     if (ctx.message.photo || ctx.message.document) {
       return ctx.reply("Currently, only text and voice messages are supported.");
     }
