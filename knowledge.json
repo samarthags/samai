@@ -1,14 +1,17 @@
 [
   {
     "name": "Supriya Bhat",
-    "description": "Supriya Bhat is from Sagar and works as a software engineer."
+    "description": "Supriya Bhat is from Sagar and works as a software engineer.",
+    "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/12/User_icon_2.svg/240px-User_icon_2.svg.png"
   },
   {
     "name": "Expo",
-    "description": "Expo is a virtual AI assistant created by Samartha GS using the SGS model."
+    "description": "Expo is a virtual AI assistant created by Samartha GS using the SGS model.",
+    "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/05/Robot_icon.svg/240px-Robot_icon.svg.png"
   },
   {
     "name": "Samartha GS",
-    "description": "Samartha GS is the creator of Expo, a student from Sagara studying full stack projects."
+    "description": "Samartha GS is the creator of Expo, a student from Sagara studying full stack projects.",
+    "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7c/User_font_awesome.svg/240px-User_font_awesome.svg.png"
   }
 ]
