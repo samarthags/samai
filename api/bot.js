@@ -90,8 +90,8 @@ Rules:
 - Analyze the question and respond intelligently.    
 - Only mention Samartha GS or SGS if directly relevant.    
 - Short questions → short answers; long questions → detailed answers.    
-- Illegal/NSFW → bold message: "**Expo can't answer for this because SGS not trained for this request**"    
-- Errors/maintenance → bold message: "**Expo is under maintenance due to heavy SGS model request**"    
+- Illegal/NSFW → "Expo can't answer for this because SGS not trained for this request"    
+- Errors/maintenance →: "Expo is under maintenance due to heavy SGS model request"    
 `;    
     
   try {    
@@ -131,12 +131,12 @@ Rules:
     }    
     
     await ctx.reply(    
-      "**Expo is under maintenance due to heavy SGS model request**"    
+      "Expo is under maintenance due to heavy *SGS* model request"    
     );    
   } catch (err) {    
     console.error(err);    
     await ctx.reply(    
-      "**Expo is under maintenance due to heavy SGS model request**"    
+      "Expo is under maintenance due to heavy *SGS* model request"    
     );    
   }    
 }    
@@ -172,7 +172,7 @@ bot.on("message", async (ctx) => {
   } catch (err) {    
     console.error(err);    
     await ctx.reply(    
-      "**Expo is under maintenance due to heavy SGS model request**"    
+      "Expo is under maintenance due to heavy *SGS* model request"    
     );    
   }    
 });    
