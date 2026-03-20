@@ -28,6 +28,16 @@ const getSession = (id) => {
 const MODELS = ["llama-3.1-70b-versatile", "llama-3.1-8b-instant"];
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
+// ===== KEEP TYPING LOOP =====
+async function keepTyping(ctx, stopSignal) {
+  while (!stopSignal.stop) {
+    try {
+      await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
+    } catch {}
+    await delay(4000);
+  }
+}
+
 // ===== TELEGRAM FILE =====
 async function getFileUrl(fileId) {
   const res = await fetch(
@@ -63,7 +73,7 @@ async function speechToText(fileUrl) {
   }
 }
 
-// ===== STREAMING AI RESPONSE (WORD BASED) =====
+// ===== STREAMING AI RESPONSE =====
 async function streamAIResponse(ctx, userId, message) {
   const history = getSession(userId);
 
@@ -87,101 +97,82 @@ KNOWLEDGE:
 ${knowledgeHints}
 `;
 
-  // ===== TYPING CONTROL =====
+  // ===== START TYPING LOOP =====
   const stopSignal = { stop: false };
+  keepTyping(ctx, stopSignal);
 
-  const typingLoop = (async () => {
-    while (!stopSignal.stop) {
-      try {
-        await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-      } catch {}
-      await delay(3500);
-    }
-  })();
-
-  try {
-    for (const model of MODELS) {
-      try {
-        const res = await fetch(
-          "https://api.groq.com/openai/v1/chat/completions",
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${GROQ_API_KEY}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              model,
-              messages: [
-                { role: "system", content: systemMessage },
-                ...history,
-              ],
-              temperature: 0.6,
-              max_tokens: 1024,
-            }),
-          }
-        );
-
-        const data = await res.json();
-        if (!res.ok) continue;
-
-        const fullText = data.choices?.[0]?.message?.content;
-        if (!fullText) continue;
-
-        history.push({ role: "assistant", content: fullText });
-
-        // ===== WORD STREAMING =====
-        let sent = await ctx.reply("...");
-        let currentText = "";
-
-        const words = fullText.split(" ");
-
-        for (let i = 0; i < words.length; i++) {
-          currentText += words[i] + " ";
-
-          if (i % 8 === 0 || i === words.length - 1) {
-            try {
-              await ctx.telegram.editMessageText(
-                ctx.chat.id,
-                sent.message_id,
-                null,
-                currentText
-              );
-            } catch {}
-            await delay(120);
-          }
+  for (const model of MODELS) {
+    try {
+      const res = await fetch(
+        "https://api.groq.com/openai/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${GROQ_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: "system", content: systemMessage },
+              ...history,
+            ],
+            temperature: 0.6,
+            max_tokens: 1024,
+          }),
         }
+      );
 
-        return;
-      } catch (err) {
-        console.error(err);
-        continue;
+      const data = await res.json();
+      if (!res.ok) continue;
+
+      const fullText = data.choices?.[0]?.message?.content;
+      if (!fullText) continue;
+
+      history.push({ role: "assistant", content: fullText });
+
+      // ===== STREAMING EFFECT =====
+      let sent = await ctx.reply("...");
+      let currentText = "";
+
+      const words = fullText.split(" ");
+
+      for (let i = 0; i < words.length; i++) {
+        currentText += words[i] + " ";
+
+        if (i % 8 === 0 || i === words.length - 1) {
+          try {
+            await ctx.telegram.editMessageText(
+              ctx.chat.id,
+              sent.message_id,
+              null,
+              currentText
+            );
+          } catch {}
+          await delay(120);
+        }
       }
-    }
 
-    await ctx.reply("Sorry, something went wrong.");
-  } finally {
-    await delay(200); // prevent lingering typing
-    stopSignal.stop = true;
-    await typingLoop;
+      stopSignal.stop = true;
+      return;
+    } catch (err) {
+      console.error(err);
+      continue;
+    }
   }
+
+  stopSignal.stop = true;
+  ctx.reply("Sorry, something went wrong.");
 }
 
 // ===== START =====
 bot.start(async (ctx) => {
-  try {
-    await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-    await delay(800);
+  const name = ctx.from.first_name || "there";
+  await delay(500);
 
-    const name = ctx.from.first_name || "there";
-
-    await ctx.reply(
-      `Hi *${name}*, I'm *Expo*. How can I help you today?`,
-      { parse_mode: "Markdown" }
-    );
-  } catch (err) {
-    console.error(err);
-  }
+  ctx.reply(`Hi *${name}*, I'm *Expo*. How can I help you today?`, {
+    parse_mode: "Markdown",
+  });
 });
 
 // ===== MESSAGE HANDLER =====
@@ -189,6 +180,7 @@ bot.on("message", async (ctx) => {
   const userId = ctx.from.id;
 
   try {
+    // ===== VOICE =====
     if (ctx.message.voice) {
       const url = await getFileUrl(ctx.message.voice.file_id);
       const text = await speechToText(url);
@@ -198,6 +190,7 @@ bot.on("message", async (ctx) => {
       return streamAIResponse(ctx, userId, text);
     }
 
+    // ===== TEXT =====
     if (ctx.message.text) {
       return streamAIResponse(ctx, userId, ctx.message.text);
     }
