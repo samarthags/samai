@@ -63,36 +63,33 @@ async function speechToText(fileUrl) {
   }
 }
 
-// ===== SEND KNOWLEDGE ENTRY (WITH IMAGE) =====
-async function sendKnowledge(ctx, name) {
-  const entry = localKnowledge.find(
-    (item) => item.name.toLowerCase() === name.toLowerCase()
-  );
-
-  if (!entry) {
-    return ctx.reply("I could not find information about that topic.");
-  }
-
-  if (entry.image) {
-    await ctx.replyWithPhoto(entry.image, { caption: entry.description });
-  } else {
-    await ctx.reply(entry.description);
-  }
-}
-
-// ===== SEND AI RESPONSE =====
-async function sendAIResponse(ctx, userId, message) {
+// ===== SEND KNOWLEDGE WITH IMAGE + BUFFERED AI =====
+async function sendKnowledgeOrAI(ctx, userId, message) {
   const history = getSession(userId);
   const cleanMessage = message.trim();
   history.push({ role: "user", content: cleanMessage });
 
   if (history.length > 12) history.splice(0, history.length - 12);
 
-  const localKnowledgeText = localKnowledge
-    .map((item) => `${item.name}: ${item.description}`)
-    .join("\n");
+  // Check if message mentions a knowledge entry
+  const matchedEntry = localKnowledge.find((item) =>
+    cleanMessage.toLowerCase().includes(item.name.toLowerCase())
+  );
 
-  const systemMessage = `
+  try {
+    await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
+
+    // If knowledge entry exists AND has an image, send image first
+    if (matchedEntry && matchedEntry.image) {
+      await ctx.replyWithPhoto(matchedEntry.image, { caption: matchedEntry.description });
+    }
+
+    // ---- AI Analysis for response ----
+    const localKnowledgeText = localKnowledge
+      .map((item) => `${item.name}: ${item.description}`)
+      .join("\n");
+
+    const systemMessage = `
 You are Expo, an advanced AI assistant.
 
 Internal knowledge:
@@ -105,14 +102,15 @@ Local knowledge:
 ${localKnowledgeText}
 
 Rules:
+- Analyze the question and respond intelligently.
 - Only mention Samartha GS or SGS if directly relevant.
 - Short questions → short answers; long questions → detailed answers.
-- Avoid irrelevant topics (no other APIs or unrelated services).
 - Illegal/NSFW → bold message: "**Expo can't answer for this because SGS not trained for this request**"
 - Errors/maintenance → bold message: "**Expo is under maintenance due to heavy SGS model request**"
 `;
 
-  try {
+    // Send placeholder to simulate typing
+    let sent = await ctx.reply("...");
     await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
 
     for (const model of MODELS) {
@@ -143,11 +141,32 @@ Rules:
       if (!fullText) continue;
 
       history.push({ role: "assistant", content: fullText });
-      await ctx.reply(fullText);
+
+      // ---- Buffered typing simulation ----
+      let currentText = "";
+      const words = fullText.split(" ");
+      for (let i = 0; i < words.length; i++) {
+        currentText += words[i] + " ";
+        if (i % 5 === 0 || i === words.length - 1) {
+          try {
+            await ctx.telegram.editMessageText(
+              ctx.chat.id,
+              sent.message_id,
+              null,
+              currentText.trim()
+            );
+          } catch {}
+          await delay(150);
+        }
+      }
+
       return;
     }
 
-    await ctx.reply(
+    await ctx.telegram.editMessageText(
+      ctx.chat.id,
+      sent.message_id,
+      null,
       "**Expo is under maintenance due to heavy SGS model request**"
     );
   } catch (err) {
@@ -170,33 +189,19 @@ bot.start(async (ctx) => {
 // ===== MESSAGE HANDLER =====
 bot.on("message", async (ctx) => {
   const userId = ctx.from.id;
-  const text = ctx.message.text;
 
   try {
     await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
 
-    // Check if message matches a knowledge entry
-    if (text) {
-      const match = localKnowledge.find((item) =>
-        text.toLowerCase().includes(item.name.toLowerCase())
-      );
-
-      if (match) {
-        return sendKnowledge(ctx, match.name);
-      }
-    }
-
-    // Voice message
     if (ctx.message.voice) {
       const url = await getFileUrl(ctx.message.voice.file_id);
-      const voiceText = await speechToText(url);
-      if (!voiceText) return ctx.reply("Could not understand the voice message.");
-      return sendAIResponse(ctx, userId, voiceText);
+      const text = await speechToText(url);
+      if (!text) return ctx.reply("Could not understand the voice message.");
+      return sendKnowledgeOrAI(ctx, userId, text);
     }
 
-    // Otherwise, normal AI response
-    if (text) {
-      return sendAIResponse(ctx, userId, text);
+    if (ctx.message.text) {
+      return sendKnowledgeOrAI(ctx, userId, ctx.message.text);
     }
 
     ctx.reply("Currently, only text and voice messages are supported.");
