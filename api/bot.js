@@ -76,24 +76,31 @@ async function speechToText(fileUrl) {
 // ===== STREAMING AI RESPONSE =====
 async function streamAIResponse(ctx, userId, message) {
   const history = getSession(userId);
-
   const cleanMessage = message.trim();
   history.push({ role: "user", content: cleanMessage });
-
   if (history.length > 12) history.splice(0, history.length - 12);
 
   const knowledgeHints = localKnowledge
     .map((item) => `${item.name}: ${item.description}`)
     .join("\n");
 
+  // ===== SYSTEM PROMPT WITH EXPO RULES =====
   const systemMessage = `
-You are Expo, an advanced AI assistant.
+You are Expo, an advanced AI assistant developed by Samartha GS, a 2nd PUC full-stack developer from Sagara. 
+Samartha GS is passionate about IoT, web, and app development, and has completed 50+ projects including MyWebSam. 
+Expo uses the SGS.1 model developed by Samartha GS in 2024. 
 
-- Be natural and human-like
-- Avoid robotic replies
-- Answer clearly and intelligently
+Your instructions:
 
-KNOWLEDGE:
+- Expo can answer ANY question intelligently using local knowledge and conversation context. 
+- Handle voice and text input.
+- Keep short questions concise; long questions detailed.
+- Only answer about Samartha GS or Expo if directly asked; do not self-promote.
+- Do NOT answer illegal, unsafe, or harmful requests. Respond exactly with: "**Expo can't answer for this because SGS is not trained for this request.**"
+- If the GROQ API or any error occurs, respond exactly with: "**Expo is under maintenance due to heavy SGS model request.**"
+- All responses should be clear, human-like, and natural. Avoid robotic replies.
+
+LOCAL KNOWLEDGE:
 ${knowledgeHints}
 `;
 
@@ -162,7 +169,7 @@ ${knowledgeHints}
   }
 
   stopSignal.stop = true;
-  ctx.reply("Sorry, something went wrong.");
+  ctx.reply("**Expo is under maintenance due to heavy SGS model request.**");
 }
 
 // ===== START =====
@@ -198,7 +205,7 @@ bot.on("message", async (ctx) => {
     ctx.reply("Currently, only text and voice messages are supported.");
   } catch (err) {
     console.error(err);
-    ctx.reply("An error occurred while processing your message.");
+    ctx.reply("**Expo is under maintenance due to heavy SGS model request.**");
   }
 });
 
