@@ -25,9 +25,17 @@ const getSession = (id) => {
   return sessions.get(id);
 };
 
+// ===== PER-USER QUEUE FOR PARALLEL HANDLING =====
+const userQueues = new Map();
+async function enqueueUserRequest(userId, task) {
+  if (!userQueues.has(userId)) userQueues.set(userId, Promise.resolve());
+  const queue = userQueues.get(userId).then(() => task());
+  userQueues.set(userId, queue.catch(() => {}));
+  return queue;
+}
+
 // ===== UTILS =====
 const MODELS = ["llama-3.1-70b-versatile", "llama-3.1-8b-instant"];
-const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
 // ===== TELEGRAM FILE DOWNLOAD =====
 async function getFileUrl(fileId) {
@@ -63,6 +71,20 @@ async function speechToText(fileUrl) {
   }
 }
 
+// ===== SAFE AI RESPONSE WITH FIXED FALLBACK =====
+async function safeSendAIResponse(ctx, userId, message) {
+  try {
+    await sendAIResponse(ctx, userId, message);
+  } catch (err) {
+    console.error("GROQ API failed:", err);
+
+    // Fixed fallback response
+    await ctx.reply(
+      "**Expo is under maintenance due to heavy SGS model request**"
+    );
+  }
+}
+
 // ===== SEND AI RESPONSE =====
 async function sendAIResponse(ctx, userId, message) {
   const history = getSession(userId);
@@ -95,81 +117,79 @@ Rules:
 - Errors/maintenance → bold message: "**Expo is under maintenance due to heavy SGS model request**"
 `;
 
-  try {
-    for (const model of MODELS) {
-      const res = await fetch(
-        "https://api.groq.com/openai/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${GROQ_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model,
-            messages: [
-              { role: "system", content: systemMessage },
-              ...history,
-            ],
-            temperature: 0.6,
-            max_tokens: 1024,
-          }),
-        }
-      );
+  // Typing indicator
+  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
 
-      const data = await res.json();
-      if (!res.ok) continue;
-
-      const fullText = data.choices?.[0]?.message?.content;
-      if (!fullText) continue;
-
-      history.push({ role: "assistant", content: fullText });
-      await ctx.reply(fullText);
-      return;
-    }
-
-    await ctx.reply(
-      "**Expo is under maintenance due to heavy SGS model request**"
+  for (const model of MODELS) {
+    const res = await fetch(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${GROQ_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: systemMessage },
+            ...history,
+          ],
+          temperature: 0.6,
+          max_tokens: 1024,
+        }),
+      }
     );
-  } catch (err) {
-    console.error(err);
-    await ctx.reply(
-      "**Expo is under maintenance due to heavy SGS model request**"
-    );
+
+    const data = await res.json();
+    if (!res.ok) continue;
+
+    const fullText = data.choices?.[0]?.message?.content;
+    if (!fullText) continue;
+
+    history.push({ role: "assistant", content: fullText });
+    await ctx.reply(fullText);
+    return;
   }
+
+  // Fallback if no model succeeded
+  await ctx.reply(
+    "**Expo is under maintenance due to heavy SGS model request**"
+  );
 }
 
 // ===== BOT START =====
 bot.start(async (ctx) => {
   const name = ctx.from.first_name || "there";
+  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
   await ctx.reply(`Hi *${name}*, I'm *Expo*. How can I help you today?`, {
     parse_mode: "Markdown",
   });
 });
 
 // ===== MESSAGE HANDLER =====
-bot.on("message", async (ctx) => {
+bot.on("message", (ctx) => {
   const userId = ctx.from.id;
 
-  try {
-    if (ctx.message.voice) {
-      const url = await getFileUrl(ctx.message.voice.file_id);
-      const text = await speechToText(url);
-      if (!text) return ctx.reply("Could not understand the voice message.");
-      return sendAIResponse(ctx, userId, text);
+  enqueueUserRequest(userId, async () => {
+    try {
+      if (ctx.message.voice) {
+        const url = await getFileUrl(ctx.message.voice.file_id);
+        const text = await speechToText(url);
+        if (!text) return ctx.reply("Could not understand voice message.");
+        await safeSendAIResponse(ctx, userId, text);
+      } else if (ctx.message.text) {
+        await safeSendAIResponse(ctx, userId, ctx.message.text);
+      } else {
+        ctx.reply("Currently only text and voice messages are supported.");
+      }
+    } catch (err) {
+      console.error(err);
+      await ctx.reply(
+        "**Expo is under maintenance due to heavy SGS model request**"
+      );
     }
-
-    if (ctx.message.text) {
-      return sendAIResponse(ctx, userId, ctx.message.text);
-    }
-
-    ctx.reply("Currently, only text and voice messages are supported.");
-  } catch (err) {
-    console.error(err);
-    await ctx.reply(
-      "**Expo is under maintenance due to heavy SGS model request**"
-    );
-  }
+  });
 });
 
 // ===== WEBHOOK =====
