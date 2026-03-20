@@ -63,12 +63,7 @@ async function speechToText(fileUrl) {
   }
 }
 
-// ===== SPLIT INTO SENTENCES =====
-function splitSentences(text) {
-  return text.match(/[^.!?]+[.!?]+/g) || [text];
-}
-
-// ===== STREAMING AI RESPONSE =====
+// ===== STREAMING AI RESPONSE (WORD BASED) =====
 async function streamAIResponse(ctx, userId, message) {
   const history = getSession(userId);
 
@@ -135,25 +130,26 @@ ${knowledgeHints}
 
         history.push({ role: "assistant", content: fullText });
 
-        // ===== SENTENCE STREAMING =====
+        // ===== WORD STREAMING =====
         let sent = await ctx.reply("...");
         let currentText = "";
 
-        const sentences = splitSentences(fullText);
+        const words = fullText.split(" ");
 
-        for (let i = 0; i < sentences.length; i++) {
-          currentText += sentences[i] + " ";
+        for (let i = 0; i < words.length; i++) {
+          currentText += words[i] + " ";
 
-          try {
-            await ctx.telegram.editMessageText(
-              ctx.chat.id,
-              sent.message_id,
-              null,
-              currentText
-            );
-          } catch {}
-
-          await delay(300); // smoother pacing
+          if (i % 8 === 0 || i === words.length - 1) {
+            try {
+              await ctx.telegram.editMessageText(
+                ctx.chat.id,
+                sent.message_id,
+                null,
+                currentText
+              );
+            } catch {}
+            await delay(120);
+          }
         }
 
         return;
@@ -165,7 +161,7 @@ ${knowledgeHints}
 
     await ctx.reply("Sorry, something went wrong.");
   } finally {
-    await delay(200);
+    await delay(200); // prevent lingering typing
     stopSignal.stop = true;
     await typingLoop;
   }
