@@ -6,17 +6,6 @@ import path from "path";
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-// ===== KNOWLEDGE =====
-const knowledgePath = path.join(process.cwd(), "knowledge.json");
-let localKnowledge = [];
-
-try {
-  const data = fs.readFileSync(knowledgePath, "utf-8");
-  localKnowledge = JSON.parse(data);
-} catch (err) {
-  console.error("Knowledge load error:", err);
-}
-
 // ===== MEMORY =====
 const sessions = new Map();
 const getSession = (id) => {
@@ -29,54 +18,79 @@ const MODELS = ["llama-3.1-70b-versatile", "llama-3.1-8b-instant"];
 // ===== HELPERS =====
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
-// ===== TELEGRAM FILE =====
-async function getFileUrl(fileId) {
-  const res = await fetch(
-    `https://api.telegram.org/bot${process.env.BOT_TOKEN}/getFile?file_id=${fileId}`
+// ===== 🌐 WEB SEARCH DETECTION =====
+function needsWebSearch(query) {
+  const triggers = [
+    "latest",
+    "news",
+    "today",
+    "current",
+    "price",
+    "2025",
+    "2026",
+    "update",
+    "recent",
+    "who is",
+    "what is happening",
+  ];
+
+  return triggers.some((word) =>
+    query.toLowerCase().includes(word)
   );
-  const data = await res.json();
-  return `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${data.result.file_path}`;
 }
 
-// ===== SPEECH TO TEXT =====
-async function speechToText(fileUrl) {
+// ===== 🌐 WEB SEARCH =====
+async function webSearch(query) {
   try {
-    const audio = await fetch(fileUrl).then((r) => r.arrayBuffer());
-    const form = new FormData();
-
-    form.append("file", new Blob([audio]), "audio.ogg");
-    form.append("model", "whisper-large-v3");
-
     const res = await fetch(
-      "https://api.groq.com/openai/v1/audio/transcriptions",
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
-        body: form,
-      }
+      `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json`
     );
-
     const data = await res.json();
-    return data.text;
+
+    return (
+      data.AbstractText ||
+      data.RelatedTopics?.map((t) => t.Text).slice(0, 3).join("\n") ||
+      ""
+    );
   } catch (err) {
-    console.error(err);
-    return null;
+    console.error("Web search error:", err);
+    return "";
   }
 }
 
-// ===== STREAMING RESPONSE =====
+// ===== 🧠 STREAMING AI RESPONSE =====
 async function streamAIResponse(ctx, userId, message) {
   const history = getSession(userId);
 
   history.push({ role: "user", content: message });
   if (history.length > 12) history.splice(0, history.length - 12);
 
+  // ===== 🌐 GET WEB DATA IF NEEDED =====
+  let webContext = "";
+
+  if (needsWebSearch(message)) {
+    const webData = await webSearch(message);
+
+    if (webData) {
+      webContext = `
+REAL-TIME INFO:
+${webData}
+
+Use this only if relevant.
+`;
+    }
+  }
+
   const systemMessage = `
 You are Expo, an advanced AI assistant.
 
+${webContext}
+
+Rules:
 - Be natural and human-like
-- Keep answers clean and helpful
-- Avoid robotic tone
+- If real-time info is provided, use it
+- If not, answer normally
+- Avoid robotic replies
 `;
 
   for (const model of MODELS) {
@@ -96,7 +110,7 @@ You are Expo, an advanced AI assistant.
               ...history,
             ],
             temperature: 0.6,
-            stream: false, // we simulate streaming
+            max_tokens: 1024,
           }),
         }
       );
@@ -108,7 +122,7 @@ You are Expo, an advanced AI assistant.
 
       history.push({ role: "assistant", content: fullText });
 
-      // ===== STREAM SIMULATION =====
+      // ===== ⚡ STREAMING EFFECT =====
       let sentMessage = await ctx.reply("...");
       let currentText = "";
 
@@ -117,7 +131,6 @@ You are Expo, an advanced AI assistant.
       for (let i = 0; i < words.length; i++) {
         currentText += words[i] + " ";
 
-        // update every few words
         if (i % 8 === 0 || i === words.length - 1) {
           try {
             await ctx.telegram.editMessageText(
@@ -144,7 +157,7 @@ You are Expo, an advanced AI assistant.
 // ===== START =====
 bot.start(async (ctx) => {
   const name = ctx.from.first_name || "there";
-  await ctx.reply(`Hi ${name}, I'm Expo. How can I help?`);
+  ctx.reply(`Hi ${name}, I'm Expo. How can I help you?`);
 });
 
 // ===== MESSAGE HANDLER =====
@@ -154,22 +167,11 @@ bot.on("message", async (ctx) => {
   try {
     await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
 
-    // ===== VOICE =====
-    if (ctx.message.voice) {
-      const url = await getFileUrl(ctx.message.voice.file_id);
-      const text = await speechToText(url);
-
-      if (!text) return ctx.reply("Couldn't understand voice.");
-
-      return streamAIResponse(ctx, userId, text);
-    }
-
-    // ===== TEXT =====
     if (ctx.message.text) {
       return streamAIResponse(ctx, userId, ctx.message.text);
     }
 
-    ctx.reply("Only text and voice supported.");
+    ctx.reply("Only text messages are supported.");
   } catch (err) {
     console.error(err);
     ctx.reply("Error processing request.");
