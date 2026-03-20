@@ -63,6 +63,23 @@ async function speechToText(fileUrl) {
   }
 }
 
+// ===== SEND KNOWLEDGE ENTRY (WITH IMAGE) =====
+async function sendKnowledge(ctx, name) {
+  const entry = localKnowledge.find(
+    (item) => item.name.toLowerCase() === name.toLowerCase()
+  );
+
+  if (!entry) {
+    return ctx.reply("I could not find information about that topic.");
+  }
+
+  if (entry.image) {
+    await ctx.replyWithPhoto(entry.image, { caption: entry.description });
+  } else {
+    await ctx.reply(entry.description);
+  }
+}
+
 // ===== SEND AI RESPONSE =====
 async function sendAIResponse(ctx, userId, message) {
   const history = getSession(userId);
@@ -71,7 +88,6 @@ async function sendAIResponse(ctx, userId, message) {
 
   if (history.length > 12) history.splice(0, history.length - 12);
 
-  // ===== BUILD SYSTEM PROMPT INCLUDING BOTH INTERNAL DATA AND LOCAL KNOWLEDGE =====
   const localKnowledgeText = localKnowledge
     .map((item) => `${item.name}: ${item.description}`)
     .join("\n");
@@ -80,16 +96,16 @@ async function sendAIResponse(ctx, userId, message) {
 You are Expo, an advanced AI assistant.
 
 Internal knowledge:
-- Samartha Gs: student, 2nd PUC, full-stack developer, 50+ projects including MyWebSam, passionate about IoT and software development.
-- SGS Model: AI model developed by Samartha Gs in 2024, powers Expo AI.
+- Samartha GS: student, 2nd PUC, full-stack developer, 50+ projects including MyWebSam, passionate about IoT and software development.
+- SGS Model: AI model developed by Samartha GS in 2024, powers Expo AI.
 - Expo AI: assistant capable of answering questions, handling text and voice input.
-- Contact: samarthags121@gmail.com, samarthags.in
+- Contact: samarthags121@gmail.com, samarthagss.in
 
 Local knowledge:
 ${localKnowledgeText}
 
 Rules:
-- Only mention Samartha Gs or SGS if directly relevant.
+- Only mention Samartha GS or SGS if directly relevant.
 - Short questions → short answers; long questions → detailed answers.
 - Avoid irrelevant topics (no other APIs or unrelated services).
 - Illegal/NSFW → bold message: "**Expo can't answer for this because SGS not trained for this request**"
@@ -154,19 +170,33 @@ bot.start(async (ctx) => {
 // ===== MESSAGE HANDLER =====
 bot.on("message", async (ctx) => {
   const userId = ctx.from.id;
+  const text = ctx.message.text;
 
   try {
     await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
 
-    if (ctx.message.voice) {
-      const url = await getFileUrl(ctx.message.voice.file_id);
-      const text = await speechToText(url);
-      if (!text) return ctx.reply("Could not understand the voice message.");
-      return sendAIResponse(ctx, userId, text);
+    // Check if message matches a knowledge entry
+    if (text) {
+      const match = localKnowledge.find((item) =>
+        text.toLowerCase().includes(item.name.toLowerCase())
+      );
+
+      if (match) {
+        return sendKnowledge(ctx, match.name);
+      }
     }
 
-    if (ctx.message.text) {
-      return sendAIResponse(ctx, userId, ctx.message.text);
+    // Voice message
+    if (ctx.message.voice) {
+      const url = await getFileUrl(ctx.message.voice.file_id);
+      const voiceText = await speechToText(url);
+      if (!voiceText) return ctx.reply("Could not understand the voice message.");
+      return sendAIResponse(ctx, userId, voiceText);
+    }
+
+    // Otherwise, normal AI response
+    if (text) {
+      return sendAIResponse(ctx, userId, text);
     }
 
     ctx.reply("Currently, only text and voice messages are supported.");
