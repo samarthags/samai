@@ -6,7 +6,7 @@ import path from "path";
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-// ===== Knowledge =====
+// ===== Load Knowledge =====
 const knowledgePath = path.join(process.cwd(), "knowledge.json");
 let localKnowledge = [];
 
@@ -22,12 +22,7 @@ const getSession = (id) => {
   return sessions.get(id);
 };
 
-// ===== TTS (Voice Reply) =====
-function textToSpeech(text) {
-  return `https://api.streamelements.com/kappa/v2/speech?voice=Brian&text=${encodeURIComponent(text)}`;
-}
-
-// ===== Telegram File =====
+// ===== Telegram File URL =====
 async function getFileUrl(fileId) {
   const res = await fetch(
     `https://api.telegram.org/bot${process.env.BOT_TOKEN}/getFile?file_id=${fileId}`
@@ -60,7 +55,45 @@ async function speechToText(fileUrl) {
   }
 }
 
-// ===== AI =====
+// ===== Image Analysis =====
+async function analyzeImage(fileUrl) {
+  try {
+    const res = await fetch(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${GROQ_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "llama-3.2-11b-vision-preview",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "Describe this image clearly." },
+                {
+                  type: "image_url",
+                  image_url: { url: fileUrl },
+                },
+              ],
+            },
+          ],
+          max_tokens: 500,
+        }),
+      }
+    );
+
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || "Couldn't analyze image.";
+  } catch (err) {
+    console.error(err);
+    return "Image analysis failed.";
+  }
+}
+
+// ===== AI Chat =====
 async function getAIResponse(userId, message) {
   const history = getSession(userId);
 
@@ -96,15 +129,15 @@ async function getAIResponse(userId, message) {
 
 // ===== START =====
 bot.start((ctx) => {
-  ctx.reply("Hi! I'm Expo 🤖 Send text or voice.");
+  ctx.reply("Hi! I'm Expo 🤖 Send text, voice, or image.");
 });
 
-// ===== MAIN =====
+// ===== MAIN HANDLER =====
 bot.on("message", async (ctx) => {
   const userId = ctx.from.id;
 
   try {
-    // ===== VOICE INPUT =====
+    // ===== VOICE =====
     if (ctx.message.voice) {
       const url = await getFileUrl(ctx.message.voice.file_id);
       const text = await speechToText(url);
@@ -112,24 +145,28 @@ bot.on("message", async (ctx) => {
       if (!text) return ctx.reply("Couldn't understand voice.");
 
       const reply = await getAIResponse(userId, text);
-
-      // Send text reply
-      await ctx.reply(reply);
-
-      // Send voice reply ONLY here
-      const voiceUrl = textToSpeech(reply.slice(0, 300));
-      return ctx.replyWithVoice({ url: voiceUrl });
-    }
-
-    // ===== TEXT INPUT =====
-    if (ctx.message.text) {
-      const reply = await getAIResponse(userId, ctx.message.text);
-
-      // ONLY text reply (no voice)
       return ctx.reply(reply);
     }
 
-    return ctx.reply("Send text or voice 🙂");
+    // ===== IMAGE =====
+    if (ctx.message.photo) {
+      const photo = ctx.message.photo.pop();
+      const fileUrl = await getFileUrl(photo.file_id);
+
+      await ctx.reply("Analyzing image...");
+
+      const description = await analyzeImage(fileUrl);
+
+      return ctx.reply(description);
+    }
+
+    // ===== TEXT =====
+    if (ctx.message.text) {
+      const reply = await getAIResponse(userId, ctx.message.text);
+      return ctx.reply(reply);
+    }
+
+    return ctx.reply("Send text, voice, or image 🙂");
 
   } catch (err) {
     console.error(err);
