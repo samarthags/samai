@@ -62,6 +62,45 @@ async function speechToText(fileUrl) {
   }
 }
 
+// ===== Image Analysis =====
+async function analyzeImage(fileUrl) {
+  try {
+    const res = await fetch(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${GROQ_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "llama-3.2-11b-vision-preview",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "Describe this image clearly." },
+                {
+                  type: "image_url",
+                  image_url: { url: fileUrl },
+                },
+              ],
+            },
+          ],
+          temperature: 0.5,
+          max_tokens: 500,
+        }),
+      }
+    );
+
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || "Couldn't analyze the image.";
+  } catch (err) {
+    console.error(err);
+    return "Error analyzing image.";
+  }
+}
+
 // ===== AI Response =====
 async function getAIResponse(userId, message) {
   const history = getSession(userId);
@@ -75,38 +114,25 @@ async function getAIResponse(userId, message) {
     .map((item) => `${item.name}: ${item.description}`)
     .join("\n");
 
-  // ===== Advanced System Prompt =====
   const systemMessage = `
 You are Expo, an advanced AI assistant.
 
 HOW TO RESPOND:
 - Understand the user's intent deeply before answering
-- Analyze properly, then respond
 - Be natural, human-like, and intelligent
-- Avoid robotic or generic replies
-- Be clear, direct, and helpful
+- Avoid robotic replies
 
-RESPONSE STYLE:
-- Simple questions → short answers
-- Complex questions → structured explanations
-- Coding → clean, working code
-- Explanations → include examples when useful
+STYLE:
+- Simple → short
+- Complex → structured
+- Coding → clean code
 
 CONTEXT:
-- Maintain conversation memory
-- Ask follow-up if needed
+- Maintain memory
+- Ask follow-ups if needed
 
-KNOWLEDGE (internal use only):
+KNOWLEDGE:
 ${knowledgeHints}
-
-ABOUT EXPO:
-Expo is an AI assistant developed by Samartha Gs using the SGS.1 model (October 2024).
-
-RULES:
-- Do NOT sound robotic
-- Do NOT say "as an AI model"
-- Do NOT mention backend/API/system
-- Only mention Samartha Gs if asked
 `;
 
   for (const model of MODELS) {
@@ -126,7 +152,6 @@ RULES:
               ...history,
             ],
             temperature: 0.6,
-            top_p: 0.9,
             max_tokens: 1024,
           }),
         }
@@ -145,7 +170,7 @@ RULES:
     }
   }
 
-  return "Sorry, something went wrong. Try again.";
+  return "Something went wrong. Try again.";
 }
 
 // ===== Start Command =====
@@ -154,13 +179,10 @@ bot.start(async (ctx) => {
   await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
   await delay(800);
 
-  ctx.reply(
-    `Hi *${name}*, I'm *Expo*. How can I help you today?`,
-    { parse_mode: "Markdown" }
-  );
+  ctx.reply(`Hi ${name}, I'm Expo. How can I help you today?`);
 });
 
-// ===== Main Message Handler =====
+// ===== Main Handler =====
 bot.on("message", async (ctx) => {
   const userId = ctx.from.id;
   await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
@@ -171,25 +193,41 @@ bot.on("message", async (ctx) => {
       const url = await getFileUrl(ctx.message.voice.file_id);
       const text = await speechToText(url);
 
-      if (!text) return ctx.reply("Could not understand the voice message.");
+      if (!text) return ctx.reply("Couldn't understand the voice.");
 
       const reply = await getAIResponse(userId, text);
-      return ctx.reply(reply, { parse_mode: "Markdown" });
+      return ctx.reply(reply);
+    }
+
+    // ===== Image =====
+    if (ctx.message.photo) {
+      const photo = ctx.message.photo.pop();
+      const fileUrl = await getFileUrl(photo.file_id);
+
+      await ctx.reply("Analyzing image...");
+
+      const description = await analyzeImage(fileUrl);
+
+      // Optional: combine with chat AI
+      const reply = await getAIResponse(
+        userId,
+        `Image content: ${description}`
+      );
+
+      return ctx.reply(reply);
     }
 
     // ===== Text =====
     if (ctx.message.text) {
       const reply = await getAIResponse(userId, ctx.message.text);
-      return ctx.reply(reply, { parse_mode: "Markdown" });
+      return ctx.reply(reply);
     }
 
-    // ===== Other Types =====
-    if (ctx.message.photo || ctx.message.document) {
-      return ctx.reply("Currently, only text and voice messages are supported.");
-    }
+    // ===== Other =====
+    return ctx.reply("Send text, voice, or image 🙂");
   } catch (err) {
     console.error(err);
-    ctx.reply("An error occurred while processing your message.");
+    ctx.reply("Error processing your request.");
   }
 });
 
@@ -199,6 +237,6 @@ export default async function handler(req, res) {
     await bot.handleUpdate(req.body);
     res.status(200).send("ok");
   } else {
-    res.status(200).send("Expo AI running");
+    res.status(200).send("Expo AI running 🚀");
   }
 }
