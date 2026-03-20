@@ -81,7 +81,7 @@ Internal knowledge:
 - Samartha GS: student, 2nd PUC, full-stack developer, 50+ projects including MyWebSam, passionate about IoT and software development.    
 - SGS Model: AI model developed by Samartha GS in 2024, powers Expo AI.    
 - Expo AI: assistant capable of answering questions, handling text and voice input.    
-- Contact: samarthags121@gmail.com, samarthagss.in    
+- Contact: samarthags121@gmail.com, telegram : @samarthags , samarthags.in    
     
 Local knowledge:    
 ${localKnowledgeText}    
