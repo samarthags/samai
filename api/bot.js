@@ -63,33 +63,19 @@ async function speechToText(fileUrl) {
   }
 }
 
-// ===== SEND KNOWLEDGE WITH IMAGE + BUFFERED AI =====
-async function sendKnowledgeOrAI(ctx, userId, message) {
+// ===== SEND AI RESPONSE =====
+async function sendAIResponse(ctx, userId, message) {
   const history = getSession(userId);
   const cleanMessage = message.trim();
   history.push({ role: "user", content: cleanMessage });
 
   if (history.length > 12) history.splice(0, history.length - 12);
 
-  // Check if message mentions a knowledge entry
-  const matchedEntry = localKnowledge.find((item) =>
-    cleanMessage.toLowerCase().includes(item.name.toLowerCase())
-  );
+  const localKnowledgeText = localKnowledge
+    .map((item) => `${item.name}: ${item.description}`)
+    .join("\n");
 
-  try {
-    await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-
-    // If knowledge entry exists AND has an image, send image first
-    if (matchedEntry && matchedEntry.image) {
-      await ctx.replyWithPhoto(matchedEntry.image, { caption: matchedEntry.description });
-    }
-
-    // ---- AI Analysis for response ----
-    const localKnowledgeText = localKnowledge
-      .map((item) => `${item.name}: ${item.description}`)
-      .join("\n");
-
-    const systemMessage = `
+  const systemMessage = `
 You are Expo, an advanced AI assistant.
 
 Internal knowledge:
@@ -109,10 +95,7 @@ Rules:
 - Errors/maintenance → bold message: "**Expo is under maintenance due to heavy SGS model request**"
 `;
 
-    // Send placeholder to simulate typing
-    let sent = await ctx.reply("...");
-    await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-
+  try {
     for (const model of MODELS) {
       const res = await fetch(
         "https://api.groq.com/openai/v1/chat/completions",
@@ -141,32 +124,11 @@ Rules:
       if (!fullText) continue;
 
       history.push({ role: "assistant", content: fullText });
-
-      // ---- Buffered typing simulation ----
-      let currentText = "";
-      const words = fullText.split(" ");
-      for (let i = 0; i < words.length; i++) {
-        currentText += words[i] + " ";
-        if (i % 5 === 0 || i === words.length - 1) {
-          try {
-            await ctx.telegram.editMessageText(
-              ctx.chat.id,
-              sent.message_id,
-              null,
-              currentText.trim()
-            );
-          } catch {}
-          await delay(150);
-        }
-      }
-
+      await ctx.reply(fullText);
       return;
     }
 
-    await ctx.telegram.editMessageText(
-      ctx.chat.id,
-      sent.message_id,
-      null,
+    await ctx.reply(
       "**Expo is under maintenance due to heavy SGS model request**"
     );
   } catch (err) {
@@ -179,7 +141,6 @@ Rules:
 
 // ===== BOT START =====
 bot.start(async (ctx) => {
-  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
   const name = ctx.from.first_name || "there";
   await ctx.reply(`Hi *${name}*, I'm *Expo*. How can I help you today?`, {
     parse_mode: "Markdown",
@@ -191,17 +152,15 @@ bot.on("message", async (ctx) => {
   const userId = ctx.from.id;
 
   try {
-    await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-
     if (ctx.message.voice) {
       const url = await getFileUrl(ctx.message.voice.file_id);
       const text = await speechToText(url);
       if (!text) return ctx.reply("Could not understand the voice message.");
-      return sendKnowledgeOrAI(ctx, userId, text);
+      return sendAIResponse(ctx, userId, text);
     }
 
     if (ctx.message.text) {
-      return sendKnowledgeOrAI(ctx, userId, ctx.message.text);
+      return sendAIResponse(ctx, userId, ctx.message.text);
     }
 
     ctx.reply("Currently, only text and voice messages are supported.");
