@@ -29,16 +29,6 @@ const getSession = (id) => {
 const MODELS = ["llama-3.1-70b-versatile", "llama-3.1-8b-instant"];
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
-// ===== TYPING LOOP =====
-async function keepTyping(ctx, stopSignal) {
-  while (!stopSignal.stop) {
-    try {
-      await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-    } catch {}
-    await delay(4000);
-  }
-}
-
 // ===== TELEGRAM FILE DOWNLOAD =====
 async function getFileUrl(fileId) {
   const res = await fetch(
@@ -53,7 +43,6 @@ async function speechToText(fileUrl) {
   try {
     const audio = await fetch(fileUrl).then((r) => r.arrayBuffer());
     const form = new FormData();
-
     form.append("file", new Blob([audio]), "audio.ogg");
     form.append("model", "whisper-large-v3");
 
@@ -74,49 +63,43 @@ async function speechToText(fileUrl) {
   }
 }
 
-// ===== STREAMING AI RESPONSE =====
-async function streamAIResponse(ctx, userId, message) {
+// ===== SEND AI RESPONSE =====
+async function sendAIResponse(ctx, userId, message) {
   const history = getSession(userId);
   const cleanMessage = message.trim();
   history.push({ role: "user", content: cleanMessage });
 
   if (history.length > 12) history.splice(0, history.length - 12);
 
-  // ===== BUILD KNOWLEDGE CONTEXT =====
-  const knowledgeHints = localKnowledge
+  // ===== BUILD SYSTEM PROMPT INCLUDING BOTH INTERNAL DATA AND LOCAL KNOWLEDGE =====
+  const localKnowledgeText = localKnowledge
     .map((item) => `${item.name}: ${item.description}`)
     .join("\n");
 
   const systemMessage = `
-You are Expo, an advanced AI assistant created by Samartha GS.
+You are Expo, an advanced AI assistant.
 
-- Can answer anything about Samartha GS, Expo AI, SGS model, IoT, web/app projects.
-- Short questions → short answers; long questions → detailed answers.
-- Avoid irrelevant topics (no other APIs, unrelated AI, or services).
-- Bold message if illegal or NSFW: "**Expo can't answer for this because SGS not trained for this request**"
-- Bold message if maintenance error occurs: "**Expo is under maintenance due to heavy SGS model request**"
-
-Knowledge:
-${knowledgeHints}
-
-About Samartha GS:
-- Student, full-stack developer, 2nd PUC, developed 50+ projects including MyWebSam
-- Created SGS model in 2024
-- Passionate about IoT, web, and app development
+Internal knowledge:
+- Samartha GS: student, 2nd PUC, full-stack developer, 50+ projects including MyWebSam, passionate about IoT and software development.
+- SGS Model: AI model developed by Samartha GS in 2024, powers Expo AI.
+- Expo AI: assistant capable of answering questions, handling text and voice input.
 - Contact: samarthags121@gmail.com, samarthagss.in
 
-About Expo:
-- AI assistant using SGS model
-- Can handle voice and text input
-- Uses local knowledge to answer questions
-- Answers depend on question length
+Local knowledge:
+${localKnowledgeText}
+
+Rules:
+- Only mention Samartha GS or SGS if directly relevant.
+- Short questions → short answers; long questions → detailed answers.
+- Avoid irrelevant topics (no other APIs or unrelated services).
+- Illegal/NSFW → bold message: "**Expo can't answer for this because SGS not trained for this request**"
+- Errors/maintenance → bold message: "**Expo is under maintenance due to heavy SGS model request**"
 `;
 
-  const stopSignal = { stop: false };
-  keepTyping(ctx, stopSignal);
+  try {
+    await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
 
-  for (const model of MODELS) {
-    try {
+    for (const model of MODELS) {
       const res = await fetch(
         "https://api.groq.com/openai/v1/chat/completions",
         {
@@ -143,46 +126,27 @@ About Expo:
       const fullText = data.choices?.[0]?.message?.content;
       if (!fullText) continue;
 
-      // Add to session history
       history.push({ role: "assistant", content: fullText });
-
-      // ===== STREAMING EFFECT =====
-      let sent = await ctx.reply("...");
-      let currentText = "";
-      const words = fullText.split(" ");
-
-      for (let i = 0; i < words.length; i++) {
-        currentText += words[i] + " ";
-        if (i % 8 === 0 || i === words.length - 1) {
-          try {
-            await ctx.telegram.editMessageText(
-              ctx.chat.id,
-              sent.message_id,
-              null,
-              currentText
-            );
-          } catch {}
-          await delay(120);
-        }
-      }
-
-      stopSignal.stop = true;
+      await ctx.reply(fullText);
       return;
-    } catch (err) {
-      console.error(err);
-      continue;
     }
-  }
 
-  stopSignal.stop = true;
-  ctx.reply("**Expo is under maintenance due to heavy SGS model request**");
+    await ctx.reply(
+      "**Expo is under maintenance due to heavy SGS model request**"
+    );
+  } catch (err) {
+    console.error(err);
+    await ctx.reply(
+      "**Expo is under maintenance due to heavy SGS model request**"
+    );
+  }
 }
 
 // ===== BOT START =====
 bot.start(async (ctx) => {
+  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
   const name = ctx.from.first_name || "there";
-  await delay(500);
-  ctx.reply(`Hi *${name}*, I'm *Expo*. How can I help you today?`, {
+  await ctx.reply(`Hi *${name}*, I'm *Expo*. How can I help you today?`, {
     parse_mode: "Markdown",
   });
 });
@@ -192,23 +156,23 @@ bot.on("message", async (ctx) => {
   const userId = ctx.from.id;
 
   try {
-    // ===== VOICE =====
+    await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
+
     if (ctx.message.voice) {
       const url = await getFileUrl(ctx.message.voice.file_id);
       const text = await speechToText(url);
       if (!text) return ctx.reply("Could not understand the voice message.");
-      return streamAIResponse(ctx, userId, text);
+      return sendAIResponse(ctx, userId, text);
     }
 
-    // ===== TEXT =====
     if (ctx.message.text) {
-      return streamAIResponse(ctx, userId, ctx.message.text);
+      return sendAIResponse(ctx, userId, ctx.message.text);
     }
 
     ctx.reply("Currently, only text and voice messages are supported.");
   } catch (err) {
     console.error(err);
-    ctx.reply(
+    await ctx.reply(
       "**Expo is under maintenance due to heavy SGS model request**"
     );
   }
