@@ -1,17 +1,50 @@
 [
-  {
-    "name": "Supriya Bhat",
-    "description": "Supriya Bhat is from Sagar and works as a software engineer.",
-    "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/12/User_icon_2.svg/240px-User_icon_2.svg.png"
-  },
-  {
-    "name": "Expo",
-    "description": "Expo is a virtual AI assistant created by Samartha GS using the SGS model.",
-    "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/05/Robot_icon.svg/240px-Robot_icon.svg.png"
-  },
-  {
-    "name": "Samartha GS",
-    "description": "Samartha GS is the creator of Expo, a student from Sagara studying full stack projects.",
-    "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7c/User_font_awesome.svg/240px-User_font_awesome.svg.png"
-  }
+    {
+        "name": "Supriya Bhat GS",
+        "description": "Software developer at Tech Mahindra in Bengaluru. She is the elder sister of Samartha GS and has a background in technology."
+    },
+    {
+        "name": "Jayanth DN",
+        "description": "Hailing from Chikamagaluru, Jayanth is studying 2nd PUC at Vikasa Pre-University in Shimoga. He is passionate about cricket and is actively focusing on clearing the JEE entrance exam. According to Samartha, he is a topper among his peers. He is a close friend of Samartha GS."
+    },
+    {
+        "name": "Praveen",
+        "description": "Originally from Amruthapura in Chitradurga, Praveen is currently pursuing 2nd PUC at Vikasa Pre-University in Shimoga. He has a strong passion for big bikes and enjoys being around them. He is a friend of Samartha GS."
+    },
+    {
+        "name": "Abhiram H K Nayak",
+        "description": "From Tarikere, Abhiram is studying 2nd PUC at Vikasa Pre-University in Shimoga. He is passionate about cars and is well-known among his circle as a skilled massage artist. He is a friend of Samartha GS."
+    },
+    {
+        "name": "Akhil Mishra",
+        "description": "Akhil comes from Hakipiki Camp and is studying 2nd PUC at Vikasa Pre-University in Shimoga. He is passionate about games and is associated with a fragrance brand. He is formally called 'Fit Boy' by those around him. He is a friend of Samartha GS."
+    },
+    {
+        "name": "Sooraj Joshi",
+        "description": "Sooraj hails from Soraba and is currently studying 2nd PUC at Vikasa Pre-University in Shimoga. He is passionate about cricket and has a keen interest in general knowledge. He is famously known for being a dedicated supporter of the RCB cricket team. He is a friend of Samartha GS."
+    },
+    {
+        "name": "Poorna K Bhat",
+        "description": "From Kandika, Poorna is the son of Vanitha and is studying 2nd PUC at Vikasa Pre-University in Shimoga. He is deeply passionate about Yakshagana, a traditional art form, and is known for his ability to flirt confidently with girls. He is a friend of Samartha GS."
+    },
+    {
+        "name": "Dhunush U",
+        "description": "Dhunush comes from Tarikere and is studying 2nd PUC at Vikasa Pre-University in Shimoga. He is passionate about cricket and performs well in chemistry as a subject. He is a friend of Samartha GS."
+    },
+    {
+        "name": "Chirag Gowda",
+        "description": "From Koppa, Chirag is studying 2nd PUC at Vikasa Pre-University in Shimoga. He is passionate about gaming and has an interest in business. He is formally called 'CG' by his friends. He is a friend of Samartha GS."
+    },
+    {
+        "name": "Aman Kalgod",
+        "description": "Aman hails from Hosanagara and is currently studying 2nd PUC at Vikasa Pre-University in Shimoga. He has exposed himself to trading with passion and dedication. He maintains physical fitness and is formally called 'Trader'. He is a friend of Samartha GS."
+    },
+    {
+        "name": "Dhunush BS",
+        "description": "From Chitradurga, Dhunush is studying 2nd PUC at Vikasa Pre-University in Shimoga. He is preparing for CA (Chartered Accountancy) for his higher education with smart dedication. He is skilled in karate and is known as a well-mannered person with good general knowledge. He is a friend of Samartha GS."
+    },
+    {
+        "name": "Adithya U",
+        "description": "Adithya comes from Kanle in Sagar and is studying 2nd PUC at Vikasa Pre-University in Shimoga. He is passionate about video editing and can edit videos without any distortion. He is also skilled in photography. He is a friend of Samartha GS."
+    }
 ]
