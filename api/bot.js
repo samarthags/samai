@@ -63,6 +63,11 @@ async function speechToText(fileUrl) {
   }
 }
 
+// ===== SPLIT INTO SENTENCES =====
+function splitSentences(text) {
+  return text.match(/[^.!?]+[.!?]+/g) || [text];
+}
+
 // ===== STREAMING AI RESPONSE =====
 async function streamAIResponse(ctx, userId, message) {
   const history = getSession(userId);
@@ -95,7 +100,7 @@ ${knowledgeHints}
       try {
         await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
       } catch {}
-      await delay(4000);
+      await delay(3500);
     }
   })();
 
@@ -130,26 +135,25 @@ ${knowledgeHints}
 
         history.push({ role: "assistant", content: fullText });
 
-        // ===== STREAMING EFFECT =====
+        // ===== SENTENCE STREAMING =====
         let sent = await ctx.reply("...");
         let currentText = "";
 
-        const words = fullText.split(" ");
+        const sentences = splitSentences(fullText);
 
-        for (let i = 0; i < words.length; i++) {
-          currentText += words[i] + " ";
+        for (let i = 0; i < sentences.length; i++) {
+          currentText += sentences[i] + " ";
 
-          if (i % 8 === 0 || i === words.length - 1) {
-            try {
-              await ctx.telegram.editMessageText(
-                ctx.chat.id,
-                sent.message_id,
-                null,
-                currentText
-              );
-            } catch {}
-            await delay(120);
-          }
+          try {
+            await ctx.telegram.editMessageText(
+              ctx.chat.id,
+              sent.message_id,
+              null,
+              currentText
+            );
+          } catch {}
+
+          await delay(300); // smoother pacing
         }
 
         return;
@@ -161,7 +165,7 @@ ${knowledgeHints}
 
     await ctx.reply("Sorry, something went wrong.");
   } finally {
-    // ✅ STOP TYPING CLEANLY
+    await delay(200);
     stopSignal.stop = true;
     await typingLoop;
   }
@@ -189,7 +193,6 @@ bot.on("message", async (ctx) => {
   const userId = ctx.from.id;
 
   try {
-    // ===== VOICE =====
     if (ctx.message.voice) {
       const url = await getFileUrl(ctx.message.voice.file_id);
       const text = await speechToText(url);
@@ -199,7 +202,6 @@ bot.on("message", async (ctx) => {
       return streamAIResponse(ctx, userId, text);
     }
 
-    // ===== TEXT =====
     if (ctx.message.text) {
       return streamAIResponse(ctx, userId, ctx.message.text);
     }
