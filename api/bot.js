@@ -6,23 +6,30 @@ import path from "path";
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-// ===== Load Knowledge =====
+// ===== KNOWLEDGE =====
 const knowledgePath = path.join(process.cwd(), "knowledge.json");
 let localKnowledge = [];
 
 try {
   const data = fs.readFileSync(knowledgePath, "utf-8");
   localKnowledge = JSON.parse(data);
-} catch {}
+} catch (err) {
+  console.error("Knowledge load error:", err);
+}
 
-// ===== Memory =====
+// ===== MEMORY =====
 const sessions = new Map();
 const getSession = (id) => {
   if (!sessions.has(id)) sessions.set(id, []);
   return sessions.get(id);
 };
 
-// ===== Telegram File URL =====
+const MODELS = ["llama-3.1-70b-versatile", "llama-3.1-8b-instant"];
+
+// ===== HELPERS =====
+const delay = (ms) => new Promise((res) => setTimeout(res, ms));
+
+// ===== TELEGRAM FILE =====
 async function getFileUrl(fileId) {
   const res = await fetch(
     `https://api.telegram.org/bot${process.env.BOT_TOKEN}/getFile?file_id=${fileId}`
@@ -31,11 +38,12 @@ async function getFileUrl(fileId) {
   return `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${data.result.file_path}`;
 }
 
-// ===== Voice → Text =====
+// ===== SPEECH TO TEXT =====
 async function speechToText(fileUrl) {
   try {
     const audio = await fetch(fileUrl).then((r) => r.arrayBuffer());
     const form = new FormData();
+
     form.append("file", new Blob([audio]), "audio.ogg");
     form.append("model", "whisper-large-v3");
 
@@ -50,93 +58,102 @@ async function speechToText(fileUrl) {
 
     const data = await res.json();
     return data.text;
-  } catch {
+  } catch (err) {
+    console.error(err);
     return null;
   }
 }
 
-// ===== Image Analysis =====
-async function analyzeImage(fileUrl) {
-  try {
-    const res = await fetch(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${GROQ_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "llama-3.2-11b-vision-preview",
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "text", text: "Describe this image clearly." },
-                {
-                  type: "image_url",
-                  image_url: { url: fileUrl },
-                },
-              ],
-            },
-          ],
-          max_tokens: 500,
-        }),
-      }
-    );
-
-    const data = await res.json();
-    return data.choices?.[0]?.message?.content || "Couldn't analyze image.";
-  } catch (err) {
-    console.error(err);
-    return "Image analysis failed.";
-  }
-}
-
-// ===== AI Chat =====
-async function getAIResponse(userId, message) {
+// ===== STREAMING RESPONSE =====
+async function streamAIResponse(ctx, userId, message) {
   const history = getSession(userId);
 
   history.push({ role: "user", content: message });
   if (history.length > 12) history.splice(0, history.length - 12);
 
-  const system = `You are Expo, a helpful assistant.`;
+  const systemMessage = `
+You are Expo, an advanced AI assistant.
 
-  const res = await fetch(
-    "https://api.groq.com/openai/v1/chat/completions",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${GROQ_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "llama-3.1-8b-instant",
-        messages: [
-          { role: "system", content: system },
-          ...history,
-        ],
-      }),
+- Be natural and human-like
+- Keep answers clean and helpful
+- Avoid robotic tone
+`;
+
+  for (const model of MODELS) {
+    try {
+      const res = await fetch(
+        "https://api.groq.com/openai/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${GROQ_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: "system", content: systemMessage },
+              ...history,
+            ],
+            temperature: 0.6,
+            stream: false, // we simulate streaming
+          }),
+        }
+      );
+
+      const data = await res.json();
+      const fullText = data.choices?.[0]?.message?.content;
+
+      if (!fullText) continue;
+
+      history.push({ role: "assistant", content: fullText });
+
+      // ===== STREAM SIMULATION =====
+      let sentMessage = await ctx.reply("...");
+      let currentText = "";
+
+      const words = fullText.split(" ");
+
+      for (let i = 0; i < words.length; i++) {
+        currentText += words[i] + " ";
+
+        // update every few words
+        if (i % 8 === 0 || i === words.length - 1) {
+          try {
+            await ctx.telegram.editMessageText(
+              ctx.chat.id,
+              sentMessage.message_id,
+              null,
+              currentText
+            );
+          } catch {}
+          await delay(120);
+        }
+      }
+
+      return;
+    } catch (err) {
+      console.error(err);
+      continue;
     }
-  );
+  }
 
-  const data = await res.json();
-  const reply = data.choices?.[0]?.message?.content || "Error";
-
-  history.push({ role: "assistant", content: reply });
-  return reply;
+  ctx.reply("Something went wrong.");
 }
 
 // ===== START =====
-bot.start((ctx) => {
-  ctx.reply("Hi! I'm Expo 🤖 Send text, voice, or image.");
+bot.start(async (ctx) => {
+  const name = ctx.from.first_name || "there";
+  await ctx.reply(`Hi ${name}, I'm Expo. How can I help?`);
 });
 
-// ===== MAIN HANDLER =====
+// ===== MESSAGE HANDLER =====
 bot.on("message", async (ctx) => {
   const userId = ctx.from.id;
 
   try {
+    await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
+
     // ===== VOICE =====
     if (ctx.message.voice) {
       const url = await getFileUrl(ctx.message.voice.file_id);
@@ -144,42 +161,27 @@ bot.on("message", async (ctx) => {
 
       if (!text) return ctx.reply("Couldn't understand voice.");
 
-      const reply = await getAIResponse(userId, text);
-      return ctx.reply(reply);
-    }
-
-    // ===== IMAGE =====
-    if (ctx.message.photo) {
-      const photo = ctx.message.photo.pop();
-      const fileUrl = await getFileUrl(photo.file_id);
-
-      await ctx.reply("Analyzing image...");
-
-      const description = await analyzeImage(fileUrl);
-
-      return ctx.reply(description);
+      return streamAIResponse(ctx, userId, text);
     }
 
     // ===== TEXT =====
     if (ctx.message.text) {
-      const reply = await getAIResponse(userId, ctx.message.text);
-      return ctx.reply(reply);
+      return streamAIResponse(ctx, userId, ctx.message.text);
     }
 
-    return ctx.reply("Send text, voice, or image 🙂");
-
+    ctx.reply("Only text and voice supported.");
   } catch (err) {
     console.error(err);
-    ctx.reply("Error occurred");
+    ctx.reply("Error processing request.");
   }
 });
 
-// ===== VERCEL =====
+// ===== WEBHOOK =====
 export default async function handler(req, res) {
   if (req.method === "POST") {
     await bot.handleUpdate(req.body);
     res.status(200).send("ok");
   } else {
-    res.status(200).send("Expo running 🚀");
+    res.status(200).send("Expo AI running");
   }
 }
