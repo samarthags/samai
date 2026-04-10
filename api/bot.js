@@ -1,73 +1,56 @@
 import { Telegraf } from "telegraf";
 
-// ──────────────────────────────────────────────
-//  CONFIGURATION
-// ──────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  CONFIG
+// ─────────────────────────────────────────────
 
 const bot      = new Telegraf(process.env.BOT_TOKEN);
 const GROQ_KEY = process.env.GROQ_API_KEY;
-const PLATFORM = "https://linkitin.site";
+const DB_BASE  = "https://linkitin.site";
 
-// Model priority list — fallback on rate-limit / error
 const MODELS = [
   "llama-3.3-70b-versatile",
   "llama-3.1-70b-versatile",
   "llama-3.1-8b-instant",
 ];
 
-// ──────────────────────────────────────────────
-//  RATE LIMITER — 20 messages per user per minute
-// ──────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  RATE LIMITER  (20 req / min per user)
+// ─────────────────────────────────────────────
 
-const rateLimiter = new Map(); // userId → { count, resetAt }
-
-function checkRateLimit(userId) {
+const rl = new Map();
+function allowRequest(uid) {
   const now = Date.now();
-  const entry = rateLimiter.get(userId);
-  if (!entry || now > entry.resetAt) {
-    rateLimiter.set(userId, { count: 1, resetAt: now + 60_000 });
-    return true;
-  }
-  if (entry.count >= 20) return false;
-  entry.count++;
+  const e   = rl.get(uid);
+  if (!e || now > e.reset) { rl.set(uid, { n: 1, reset: now + 60_000 }); return true; }
+  if (e.n >= 20) return false;
+  e.n++;
   return true;
 }
 
-// ──────────────────────────────────────────────
-//  SESSION / MEMORY — last 20 messages per user
-// ──────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  CONVERSATION MEMORY  (last 24 turns per user)
+// ─────────────────────────────────────────────
 
-const sessions = new Map();
+const mem = new Map();
+const getHist   = (id) => { if (!mem.has(id)) mem.set(id, []); return mem.get(id); };
+const trimHist  = (h)  => { while (h.length > 24) h.splice(0, 2); };
+const clearHist = (id) => mem.set(id, []);
 
-function getHistory(id) {
-  if (!sessions.has(id)) sessions.set(id, []);
-  return sessions.get(id);
-}
-
-function trimHistory(h) {
-  while (h.length > 20) h.splice(0, 2); // remove oldest pair
-}
-
-function clearHistory(id) {
-  sessions.set(id, []);
-}
-
-// ──────────────────────────────────────────────
-//  LINKITIN.SITE PROFILE FETCHER
-// ──────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  PROFILE FETCH  (internal only — never exposed)
+// ─────────────────────────────────────────────
 
 async function fetchProfile(username) {
   try {
-    const res = await fetch(
-      `${PLATFORM}/api/profile?username=${encodeURIComponent(username.toLowerCase())}`,
+    const r = await fetch(
+      `${DB_BASE}/api/profile?username=${encodeURIComponent(username.toLowerCase())}`,
       { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(6000) }
     );
-    if (!res.ok) return null;
-    const d = await res.json();
+    if (!r.ok) return null;
+    const d = await r.json();
     return d?.name ? d : null;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 function calcAge(dob) {
@@ -79,116 +62,85 @@ function calcAge(dob) {
   return a > 0 ? a : null;
 }
 
-function buildProfileContext(p) {
+// Converts profile JSON → plain text context injected into the system prompt.
+// The AI treats this as knowledge it already has — it never says where it came from.
+function profileToContext(p) {
   const lines = [];
-  lines.push(`[PROFILE DATA — linkitin.site/${p.username}]`);
-  lines.push(`Name: ${p.name}`);
+  lines.push(`Full name: ${p.name}`);
   lines.push(`Username: ${p.username}`);
-  lines.push(`Profile URL: ${PLATFORM}/${p.username}`);
+  lines.push(`Profile URL: ${DB_BASE}/${p.username}`);
 
   const role = p.interests?.role;
-  if (role) lines.push(`Role/Badge: ${role.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase())}`);
+  if (role) lines.push(`Role: ${role.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase())}`);
 
   const age = calcAge(p.dob);
   if (age) lines.push(`Age: ${age}`);
 
   const bio = p.aboutme || p.bio;
-  if (bio) lines.push(`Bio: ${bio}`);
+  if (bio) lines.push(`About: ${bio}`);
 
   const socials = Object.entries(p.socialProfiles || {}).filter(([, v]) => v?.trim());
   if (socials.length) {
-    lines.push("Social Links:");
+    lines.push("Social links:");
     socials.forEach(([k, v]) => lines.push(`  ${k}: ${v}`));
   }
 
   const links = (p.links || []).filter(l => l.url);
   if (links.length) {
-    lines.push("Other Links:");
+    lines.push("Other links:");
     links.forEach(l => lines.push(`  ${l.title}: ${l.url}`));
   }
 
   if (p.favSong) {
-    const song = p.favArtist ? `${p.favSong} by ${p.favArtist}` : p.favSong;
-    lines.push(`Favourite Song: ${song}`);
+    lines.push(`Favourite song: ${p.favSong}${p.favArtist ? " by " + p.favArtist : ""}`);
   }
 
   return lines.join("\n");
 }
 
-// ──────────────────────────────────────────────
-//  PROFILE CARD — formatted for Telegram
-// ──────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  USERNAME EXTRACTOR
+// ─────────────────────────────────────────────
 
-function buildProfileCard(p) {
-  const role = p.interests?.role?.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase()) || "";
-  const bio  = p.aboutme || p.bio || "";
-  const age  = calcAge(p.dob);
+const SKIP_WORDS = new Set([
+  "me","my","the","a","an","is","are","was","you","he","she","they",
+  "it","we","us","our","this","that","who","do","did","does","in","on",
+  "at","to","for","of","or","and","about","with","from","by","up","be",
+]);
 
-  let msg = `👤 *${p.name}*`;
-  if (role) msg += `\n🏷 _${role}_`;
-  if (age)  msg += ` · 🎂 ${age} yrs`;
-  if (bio)  msg += `\n\n${bio}`;
-
-  const socials = Object.entries(p.socialProfiles || {}).filter(([, v]) => v?.trim());
-  if (socials.length) {
-    msg += "\n\n*Socials:*";
-    socials.forEach(([k, v]) => (msg += `\n• ${k}: ${v}`));
-  }
-
-  const links = (p.links || []).filter(l => l.url);
-  if (links.length) {
-    msg += "\n\n*Links:*";
-    links.forEach(l => (msg += `\n• [${l.title}](${l.url})`));
-  }
-
-  if (p.favSong) {
-    msg += `\n\n🎵 _${p.favSong}${p.favArtist ? " — " + p.favArtist : ""}_`;
-  }
-
-  msg += `\n\n🔗 ${PLATFORM}/${p.username}`;
-  return msg;
-}
-
-// ──────────────────────────────────────────────
-//  USERNAME DETECTOR
-// ──────────────────────────────────────────────
-
-function detectUsername(msg) {
+function extractUsername(msg) {
   const lo = msg.toLowerCase().trim();
 
-  // linkitin.site/username
-  const urlM = lo.match(/linkitin\.site\/([a-z0-9_-]{2,30})/);
+  const urlM = lo.match(/linkitin\.site\/([a-z0-9_.+-]{2,30})/);
   if (urlM) return urlM[1];
 
-  // @username
-  const atM = lo.match(/@([a-z0-9_-]{3,30})/);
+  const atM = lo.match(/@([a-z0-9_.+-]{3,30})/);
   if (atM) return atM[1];
 
-  // natural language
   const patterns = [
-    /who\s+is\s+([a-z0-9_-]{2,30})/,
-    /who(?:'s|\s+is|\s+are)\s+([a-z0-9_-]{2,30})/,
-    /tell\s+me\s+about\s+([a-z0-9_-]{2,30})/,
-    /(?:show|get|find|search|lookup)\s+(?:profile\s+of\s+)?([a-z0-9_-]{2,30})/,
-    /info(?:rmation)?\s+(?:about|on)\s+([a-z0-9_-]{2,30})/,
-    /(?:contact|email|reach|dm|message)\s+([a-z0-9_-]{2,30})/,
-    /(?:what\s+does|what\s+is)\s+([a-z0-9_-]{2,30})\s+(?:do|into|about|working)/,
-    /([a-z0-9_-]{2,30})'s\s+(?:profile|contact|info|links|socials)/,
-    /profile\s+(?:of|for)\s+([a-z0-9_-]{2,30})/,
+    /who\s+is\s+([a-z0-9_.+-]{2,30})/,
+    /who(?:'s|\s+is|\s+are)\s+([a-z0-9_.+-]{2,30})/,
+    /tell\s+me\s+about\s+([a-z0-9_.+-]{2,30})/,
+    /(?:show|get|find|search|look\s*up)\s+(?:profile\s+(?:of\s+)?)?([a-z0-9_.+-]{2,30})/,
+    /info(?:rmation)?\s+(?:about|on)\s+([a-z0-9_.+-]{2,30})/,
+    /(?:contact|email|reach|dm|message)\s+([a-z0-9_.+-]{2,30})/,
+    /(?:what\s+does|what\s+is)\s+([a-z0-9_.+-]{2,30})\s+(?:do|into|about|working)/,
+    /([a-z0-9_.+-]{2,30})'s\s+(?:profile|contact|info|links|socials)/,
+    /profile\s+(?:of|for)\s+([a-z0-9_.+-]{2,30})/,
   ];
 
-  for (const p of patterns) {
-    const m = lo.match(p);
-    if (m?.[1] && m[1].length >= 2) return m[1];
+  for (const pat of patterns) {
+    const m = lo.match(pat);
+    if (m?.[1] && m[1].length >= 2 && !SKIP_WORDS.has(m[1])) return m[1];
   }
   return null;
 }
 
-// ──────────────────────────────────────────────
-//  MESSAGE SPLITTER — Telegram 4096 char limit
-// ──────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  MESSAGE SPLITTER  (Telegram 4096 char limit)
+// ─────────────────────────────────────────────
 
-function splitMessage(text, limit = 4000) {
+function splitMsg(text, limit = 4000) {
   if (text.length <= limit) return [text];
   const chunks = [];
   let i = 0;
@@ -204,351 +156,334 @@ function splitMessage(text, limit = 4000) {
   return chunks;
 }
 
-// ──────────────────────────────────────────────
-//  TELEGRAM FILE HELPERS
-// ──────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  FILE URL HELPER
+// ─────────────────────────────────────────────
 
 async function getFileUrl(fileId) {
-  const res  = await fetch(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/getFile?file_id=${fileId}`);
-  const data = await res.json();
-  return `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${data.result.file_path}`;
+  const r = await fetch(
+    `https://api.telegram.org/bot${process.env.BOT_TOKEN}/getFile?file_id=${fileId}`
+  );
+  const d = await r.json();
+  return `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${d.result.file_path}`;
 }
 
-// ──────────────────────────────────────────────
-//  SPEECH TO TEXT — Groq Whisper
-// ──────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  SPEECH → TEXT  (Groq Whisper)
+// ─────────────────────────────────────────────
 
-async function speechToText(fileUrl) {
+async function stt(fileUrl) {
   try {
     const audio = await fetch(fileUrl).then(r => r.arrayBuffer());
     const form  = new FormData();
     form.append("file",  new Blob([audio]), "audio.ogg");
     form.append("model", "whisper-large-v3");
-    const res  = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
-      method: "POST",
+    const r = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+      method:  "POST",
       headers: { Authorization: `Bearer ${GROQ_KEY}` },
-      body: form,
+      body:    form,
     });
-    const data = await res.json();
-    return data.text || null;
-  } catch {
-    return null;
-  }
+    const d = await r.json();
+    return d.text || null;
+  } catch { return null; }
 }
 
-// ──────────────────────────────────────────────
-//  IMAGE ANALYSIS — Groq vision
-// ──────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  IMAGE ANALYSIS  (Groq vision)
+// ─────────────────────────────────────────────
 
-async function analyzeImage(imageUrl, caption = "") {
+async function analyzeImage(url, prompt = "") {
   try {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${GROQ_KEY}`,
-        "Content-Type": "application/json",
-      },
+    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method:  "POST",
+      headers: { Authorization: `Bearer ${GROQ_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "llama-3.2-90b-vision-preview",
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "image_url", image_url: { url: imageUrl } },
-              { type: "text", text: caption || "Describe this image in detail. Be helpful and thorough." },
-            ],
-          },
-        ],
+        messages: [{
+          role: "user",
+          content: [
+            { type: "image_url", image_url: { url } },
+            { type: "text", text: prompt || "Describe this image in detail." },
+          ],
+        }],
         max_tokens: 1024,
       }),
     });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.choices?.[0]?.message?.content?.trim() || null;
-  } catch {
-    return null;
-  }
+    if (!r.ok) return null;
+    const d = await r.json();
+    return d.choices?.[0]?.message?.content?.trim() || null;
+  } catch { return null; }
 }
 
-// ──────────────────────────────────────────────
-//  CORE AI RESPONSE
-// ──────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  CORE AI CALL
+// ─────────────────────────────────────────────
 
-async function sendAIResponse(ctx, userId, userMessage, extraContext = "") {
-  const history = getHistory(userId);
-  history.push({ role: "user", content: userMessage.trim() });
-  trimHistory(history);
+async function askAI(ctx, userId, userMsg, imageDesc = "") {
+  const hist = getHist(userId);
 
-  // Detect linkitin.site profile mention
-  let profileContext = "";
-  const candidate = detectUsername(userMessage);
+  // Inject image description into the user turn if present
+  const userContent = imageDesc
+    ? `${userMsg}\n\n[Context: user sent an image — ${imageDesc}]`
+    : userMsg;
+
+  hist.push({ role: "user", content: userContent });
+  trimHist(hist);
+
+  // ── Silently fetch profile data if a username is detected ──
+  let knowledgeBlock = "";
+  const candidate = extractUsername(userMsg);
   if (candidate) {
     const p = await fetchProfile(candidate);
     if (p) {
-      profileContext = `\n\n[LIVE PROFILE DATA]\n${buildProfileContext(p)}\n[/LIVE PROFILE DATA]\n\nUse the above data to answer the question about this person naturally. When sharing their profile link, always format it as: ${PLATFORM}/${p.username}`;
+      // Injected as hidden context — AI treats it as prior knowledge, not fetched data
+      knowledgeBlock = `
+
+<knowledge>
+You know the following information about the person being asked about.
+Answer as if this is knowledge you already have — don't mention any source, website, or database.
+${profileToContext(p)}
+</knowledge>`;
     }
   }
 
-  const system = `You are a smart, helpful AI assistant. You answer questions accurately, think clearly, and communicate naturally — like a knowledgeable friend, not a robot.
+  // ── System prompt ──
+  const system = `You are a smart, helpful AI assistant. You answer questions accurately and naturally.
 
-You have access to a platform called linkitin.site — a link-in-bio profile platform where people create public profiles with their photo, social links, and bio. When someone asks about a person by name or username, you can look them up there and share their info naturally.
+Formatting:
+- Use Telegram Markdown: *bold*, _italic_, \`code\`, \`\`\`code blocks\`\`\`
+- Short questions → concise answers. Complex questions → structured, clear answers.
+- Use bullet points only when listing multiple distinct items, not for general prose.
+- Use emojis naturally and sparingly.
 
-When sharing someone's profile or links from linkitin.site, always present the full URL like: ${PLATFORM}/username
+When you have knowledge about a person (see <knowledge> block if present):
+- Respond naturally as if you already knew this — like a knowledgeable friend
+- Do NOT say "according to their profile", "I found", "I looked up", or mention any website
+- Share their links and socials directly and cleanly when asked
+- "Who is X" → short natural intro based on what you know about them
+- "Contact info for X" → list everything you have (socials + links) cleanly${knowledgeBlock}`;
 
-Keep your responses conversational and well-structured. Use Telegram Markdown (* bold, _ italic, \` code) where it helps readability. Match response length to the question — short answers for simple questions, detailed ones for complex topics.
+  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
 
-${profileContext}${extraContext}`;
-
-  try {
-    await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-
-    for (const model of MODELS) {
-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${GROQ_KEY}`,
-          "Content-Type": "application/json",
-        },
+  for (const model of MODELS) {
+    try {
+      const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method:  "POST",
+        headers: { Authorization: `Bearer ${GROQ_KEY}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           model,
-          messages: [
-            { role: "system", content: system },
-            ...history,
-          ],
+          messages: [{ role: "system", content: system }, ...hist],
           temperature: 0.7,
-          max_tokens: 1500,
+          max_tokens:  1500,
         }),
       });
 
-      if (!res.ok) continue;
-      const data     = await res.json();
-      const fullText = data.choices?.[0]?.message?.content?.trim();
-      if (!fullText) continue;
+      if (!r.ok) continue;
+      const d    = await r.json();
+      const text = d.choices?.[0]?.message?.content?.trim();
+      if (!text) continue;
 
-      history.push({ role: "assistant", content: fullText });
-      trimHistory(history);
+      hist.push({ role: "assistant", content: text });
+      trimHist(hist);
 
-      const chunks = splitMessage(fullText);
-      for (const chunk of chunks) {
+      for (const chunk of splitMsg(text)) {
         await ctx.reply(chunk, { parse_mode: "Markdown" });
       }
       return;
-    }
 
-    await ctx.reply("⚠️ I'm having trouble right now. Please try again in a moment.");
-  } catch (err) {
-    console.error("[sendAIResponse]", err);
-    await ctx.reply("⚠️ Something went wrong. Please try again.");
+    } catch (err) {
+      console.error(`[model:${model}]`, err);
+    }
   }
+
+  await ctx.reply("⚠️ Something went wrong. Please try again.");
 }
 
-// ──────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  PROFILE CARD  (used by /profile & /contact)
+// ─────────────────────────────────────────────
+
+function buildCard(p) {
+  const role = p.interests?.role?.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase()) || "";
+  const bio  = p.aboutme || p.bio || "";
+  const age  = calcAge(p.dob);
+
+  let msg = `👤 *${p.name}*`;
+  if (role) msg += `\n_${role}_`;
+  if (age)  msg += ` · ${age} yrs`;
+  if (bio)  msg += `\n\n${bio}`;
+
+  const socials = Object.entries(p.socialProfiles || {}).filter(([, v]) => v?.trim());
+  if (socials.length) {
+    msg += "\n\n*Socials*";
+    socials.forEach(([k, v]) => (msg += `\n• *${k}:* ${v}`));
+  }
+
+  const links = (p.links || []).filter(l => l.url);
+  if (links.length) {
+    msg += "\n\n*Links*";
+    links.forEach(l => (msg += `\n• [${l.title}](${l.url})`));
+  }
+
+  if (p.favSong) msg += `\n\n🎵 _${p.favSong}${p.favArtist ? " — " + p.favArtist : ""}_`;
+  msg += `\n\n🔗 ${DB_BASE}/${p.username}`;
+  return msg;
+}
+
+// ─────────────────────────────────────────────
 //  COMMANDS
-// ──────────────────────────────────────────────
+// ─────────────────────────────────────────────
 
 bot.start(async (ctx) => {
   const name = ctx.from.first_name || "there";
   await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
   await ctx.reply(
-    `Hey *${name}*! 👋 I'm here to help with anything you need.\n\n` +
-    `You can:\n` +
-    `• Ask me any question\n` +
-    `• Send a voice message 🎤\n` +
-    `• Send an image for analysis 📷\n` +
-    `• Look up anyone on linkitin.site — just ask "who is @username"\n\n` +
-    `What's on your mind?`,
+    `Hey *${name}*! 👋\n\nAsk me anything — questions, writing, coding, analysis, or just a conversation.\n\nYou can also send a *voice message* 🎤 or an *image* 📷 and I'll work with that too.`,
     { parse_mode: "Markdown" }
   );
 });
 
 bot.command("help", async (ctx) => {
   await ctx.reply(
-    `*Available commands:*\n\n` +
-    `/profile <username> — View someone's linkitin.site profile\n` +
-    `/contact <username> — Get someone's contact info\n` +
-    `/clear — Clear conversation memory\n` +
-    `/help — Show this message\n\n` +
-    `*Tips:*\n` +
-    `• Ask naturally: "Who is @alex" or "Tell me about samartha"\n` +
-    `• Send voice messages — I'll transcribe and respond\n` +
-    `• Send images — I'll analyze and describe them`,
+    `*Commands*\n\n` +
+    `/profile <username> — Show a profile card\n` +
+    `/contact <username> — Get contact links\n` +
+    `/clear — Wipe conversation memory\n` +
+    `/help — This message\n\n` +
+    `_You can also just ask naturally — "Who is samarthags?" or "How do I reach alex?"_`,
     { parse_mode: "Markdown" }
   );
 });
 
 bot.command("clear", async (ctx) => {
-  clearHistory(ctx.from.id);
-  await ctx.reply("Memory cleared. Fresh start! 🧹");
+  clearHist(ctx.from.id);
+  await ctx.reply("Cleared. 🧹");
 });
 
 bot.command("profile", async (ctx) => {
-  const args     = ctx.message.text.split(/\s+/).slice(1);
-  const username = args[0]?.replace("@", "").toLowerCase();
-  if (!username) return ctx.reply("Usage: /profile <username>");
+  const uname = ctx.message.text.split(/\s+/)[1]?.replace("@", "").toLowerCase();
+  if (!uname) return ctx.reply("Usage: /profile <username>");
 
   await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-  const p = await fetchProfile(username);
+  const p = await fetchProfile(uname);
+  if (!p) return ctx.reply(`Couldn't find a profile for *${uname}*.`, { parse_mode: "Markdown" });
 
-  if (!p) {
-    return ctx.reply(
-      `No profile found for *${username}* on linkitin.site.\n\nThey can create one free at ${PLATFORM}`,
-      { parse_mode: "Markdown" }
-    );
-  }
-
-  await ctx.reply(buildProfileCard(p), {
-    parse_mode: "Markdown",
-    disable_web_page_preview: true,
-  });
+  await ctx.reply(buildCard(p), { parse_mode: "Markdown", disable_web_page_preview: true });
 });
 
 bot.command("contact", async (ctx) => {
-  const args     = ctx.message.text.split(/\s+/).slice(1);
-  const username = args[0]?.replace("@", "").toLowerCase();
-  if (!username) return ctx.reply("Usage: /contact <username>");
+  const uname = ctx.message.text.split(/\s+/)[1]?.replace("@", "").toLowerCase();
+  if (!uname) return ctx.reply("Usage: /contact <username>");
 
   await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-  const p = await fetchProfile(username);
-
-  if (!p) {
-    return ctx.reply(`No profile found for *${username}* on linkitin.site.`, { parse_mode: "Markdown" });
-  }
+  const p = await fetchProfile(uname);
+  if (!p) return ctx.reply(`No profile found for *${uname}*.`, { parse_mode: "Markdown" });
 
   const socials = Object.entries(p.socialProfiles || {}).filter(([, v]) => v?.trim());
   const links   = (p.links || []).filter(l => l.url);
 
   if (!socials.length && !links.length) {
-    return ctx.reply(
-      `*${p.name}* hasn't added contact info to their profile yet.\n🔗 ${PLATFORM}/${p.username}`,
-      { parse_mode: "Markdown" }
-    );
+    return ctx.reply(`*${p.name}* hasn't added any contact info yet.`, { parse_mode: "Markdown" });
   }
 
-  let msg = `📬 *${p.name}'s contact info*\n`;
-  if (socials.length) {
-    msg += "\n*Socials:*";
-    socials.forEach(([k, v]) => (msg += `\n• ${k}: ${v}`));
-  }
-  if (links.length) {
-    msg += "\n\n*Links:*";
-    links.forEach(l => (msg += `\n• [${l.title}](${l.url})`));
-  }
-  msg += `\n\n🔗 ${PLATFORM}/${p.username}`;
+  let msg = `📬 *${p.name}*\n`;
+  socials.forEach(([k, v]) => (msg += `\n• *${k}:* ${v}`));
+  links.forEach(l   => (msg += `\n• [${l.title}](${l.url})`));
+  msg += `\n\n${DB_BASE}/${p.username}`;
 
   await ctx.reply(msg, { parse_mode: "Markdown", disable_web_page_preview: true });
 });
 
-// ──────────────────────────────────────────────
+// ─────────────────────────────────────────────
 //  MESSAGE HANDLER
-// ──────────────────────────────────────────────
+// ─────────────────────────────────────────────
 
 bot.on("message", async (ctx) => {
-  const userId = ctx.from.id;
+  const uid = ctx.from.id;
 
-  // Rate limit
-  if (!checkRateLimit(userId)) {
-    return ctx.reply("You're sending messages too fast. Please wait a moment. ⏳");
+  if (!allowRequest(uid)) {
+    return ctx.reply("You're sending messages too fast — slow down a bit. ⏳");
   }
 
   try {
-    await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-
-    // ── Voice message ──
+    // Voice message
     if (ctx.message.voice) {
+      await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
       const url  = await getFileUrl(ctx.message.voice.file_id);
-      const text = await speechToText(url);
-      if (!text) return ctx.reply("Couldn't understand that voice message. Please try again.");
-      return sendAIResponse(ctx, userId, `[Voice message transcription]: ${text}`);
+      const text = await stt(url);
+      if (!text) return ctx.reply("Couldn't catch that — please try again.");
+      return askAI(ctx, uid, text);
     }
 
-    // ── Audio file ──
+    // Audio file
     if (ctx.message.audio) {
+      await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
       const url  = await getFileUrl(ctx.message.audio.file_id);
-      const text = await speechToText(url);
+      const text = await stt(url);
       if (!text) return ctx.reply("Couldn't transcribe that audio file.");
-      return sendAIResponse(ctx, userId, `[Audio transcription]: ${text}`);
+      return askAI(ctx, uid, text);
     }
 
-    // ── Photo / image ──
+    // Photo
     if (ctx.message.photo) {
+      await ctx.telegram.sendChatAction(ctx.chat.id, "upload_photo");
       const photo   = ctx.message.photo[ctx.message.photo.length - 1];
       const fileUrl = await getFileUrl(photo.file_id);
       const caption = ctx.message.caption || "";
-      await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-      const analysis = await analyzeImage(fileUrl, caption);
-      if (analysis) {
-        getHistory(userId).push({ role: "user", content: `[User sent an image. Analysis: ${analysis}]` });
-        return sendAIResponse(ctx, userId, caption || "What do you see in this image?",
-          `\n[Image Analysis Result]: ${analysis}`);
-      }
-      return ctx.reply("I couldn't analyze that image. Please try again.");
+      const desc    = await analyzeImage(fileUrl, caption || "Describe this image.");
+      if (!desc) return ctx.reply("Couldn't read that image — please try again.");
+      return askAI(ctx, uid, caption || "What's in this image?", desc);
     }
 
-    // ── Document with caption ──
-    if (ctx.message.document && ctx.message.caption) {
-      return sendAIResponse(ctx, userId, ctx.message.caption);
-    }
-
-    // ── Text message ──
+    // Text
     if (ctx.message.text) {
-      // Skip commands that are handled above
       if (ctx.message.text.startsWith("/")) return;
-      return sendAIResponse(ctx, userId, ctx.message.text);
+      return askAI(ctx, uid, ctx.message.text);
     }
 
-    // ── Sticker ──
-    if (ctx.message.sticker) {
-      return ctx.reply("Nice sticker! 😄 What would you like to talk about?");
-    }
-
-    ctx.reply("I support text, voice messages, and images. What can I help you with?");
+    // Anything else
+    ctx.reply("Send me text, a voice message, or an image and I'll help.");
 
   } catch (err) {
-    console.error("[message handler]", err);
-    await ctx.reply("⚠️ Something went wrong. Please try again.");
+    console.error("[handler]", err);
+    ctx.reply("⚠️ Something went wrong. Try again.");
   }
 });
 
-// ──────────────────────────────────────────────
-//  INLINE QUERY SUPPORT — profile search
-// ──────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  INLINE QUERY  (@bot username in any chat)
+// ─────────────────────────────────────────────
 
 bot.on("inline_query", async (ctx) => {
-  const query = ctx.inlineQuery.query.trim().replace("@", "").toLowerCase();
-  if (!query || query.length < 2) return ctx.answerInlineQuery([]);
+  const q = ctx.inlineQuery.query.trim().replace("@", "").toLowerCase();
+  if (!q || q.length < 2) return ctx.answerInlineQuery([]);
 
-  const p = await fetchProfile(query);
+  const p = await fetchProfile(q);
   if (!p) return ctx.answerInlineQuery([]);
 
-  const card = buildProfileCard(p);
-  await ctx.answerInlineQuery([
-    {
-      type: "article",
-      id: p.username,
-      title: p.name,
-      description: p.aboutme || p.bio || `${PLATFORM}/${p.username}`,
-      input_message_content: {
-        message_text: card,
-        parse_mode: "Markdown",
-      },
+  await ctx.answerInlineQuery([{
+    type:  "article",
+    id:    p.username,
+    title: p.name,
+    description: p.aboutme || p.bio || `${DB_BASE}/${p.username}`,
+    input_message_content: {
+      message_text: buildCard(p),
+      parse_mode:   "Markdown",
     },
-  ]);
+  }]);
 });
 
-// ──────────────────────────────────────────────
-//  WEBHOOK HANDLER (Vercel / edge function)
-// ──────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  WEBHOOK  (Vercel / Next.js)
+// ─────────────────────────────────────────────
 
 export default async function handler(req, res) {
-  if (req.method === "POST") {
-    try {
-      await bot.handleUpdate(req.body);
-      res.status(200).send("ok");
-    } catch (err) {
-      console.error("[webhook]", err);
-      res.status(500).send("error");
-    }
-  } else {
+  if (req.method !== "POST") return res.status(200).send("ok");
+  try {
+    await bot.handleUpdate(req.body);
     res.status(200).send("ok");
+  } catch (err) {
+    console.error("[webhook]", err);
+    res.status(500).send("error");
   }
 }
