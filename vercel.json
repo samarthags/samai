@@ -1,15 +1,19 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "api/bot.js",
-      "use": "@vercel/node"
+  "name": "samartha-ai-bot",
+  "functions": {
+    "api/bot.js": {
+      "maxDuration": 30
     }
-  ],
+  },
   "routes": [
     {
+      "src": "/api/bot",
+      "dest": "/api/bot.js"
+    },
+    {
       "src": "/(.*)",
-      "dest": "api/bot.js"
+      "dest": "/api/bot.js"
     }
   ]
 }
