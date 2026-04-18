@@ -70,36 +70,7 @@ return send(chatId, reply);
 
 } catch { return send(chatId, "Samartha's Server down"); } }
 
-// ── IMAGE ── async function handleImage(msg, chatId) { try { await typing(chatId);
-
-const fileId = msg.photo[msg.photo.length - 1].file_id;
-const { buffer } = await getFile(fileId);
-
-const base64 = Buffer.from(buffer).toString("base64");
-
-const res = await fetch(SARVAM_API, {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    "api-subscription-key": process.env.SARVAM_API_KEY
-  },
-  body: JSON.stringify({
-    model: "sarvam-m",
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "image_url",
-            image_url: {
-              url: `data:image/jpeg;base64,${base64}`
-            }
-          }
-        ]
-      }
-    ]
-  })
-});
+// ── IMAGE DISABLED ── async function handleImage(msg, chatId) { return send(chatId, "Samartha's Server down"); } } ] } ] }) });
 
 const data = await res.json();
 const text = data.choices?.[0]?.message?.content;
