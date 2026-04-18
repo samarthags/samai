@@ -2,18 +2,8 @@
   "version": 2,
   "name": "samartha-ai-bot",
   "functions": {
-    "api/bot.js": {
+    "api/*.js": {
       "maxDuration": 30
     }
-  },
-  "routes": [
-    {
-      "src": "/api/bot",
-      "dest": "/api/bot.js"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/api/bot.js"
-    }
-  ]
+  }
 }
