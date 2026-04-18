@@ -1,680 +1,536 @@
-import { Telegraf } from "telegraf";
+// ═══════════════════════════════════════════════════════════════
+//   🤖 Samartha AI — Telegram Bot
+//   ✦ Groq LLM (Llama 3.3 70B)   → text answers
+//   ✦ Groq Whisper (large-v3)     → voice messages
+//   ✦ Sarvam Vision               → image analysis
+//   ✦ Key rotation                → max free RPM
+// ═══════════════════════════════════════════════════════════════
 
-// ─────────────────────────────────────────────
-//  CONFIG
-// ─────────────────────────────────────────────
+const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM       = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
+const GROQ_URL       = "https://api.groq.com/openai/v1/chat/completions";
+const GROQ_WHISPER   = "https://api.groq.com/openai/v1/audio/transcriptions";
+const SARVAM_URL     = "https://api.sarvam.ai/v1";
+const BOT_NAME       = "Samartha AI";
+const BOT_HANDLE     = process.env.BOT_USERNAME || "samarthaai_bot";
 
-const bot      = new Telegraf(process.env.BOT_TOKEN);
-const GROQ_KEY = process.env.GROQ_API_KEY;
-const DB_BASE  = process.env.SITE_BASE_URL || "https://linkitin.site"; // change to your domain
-
-// AI identity — never expose these names to users
-const AI_NAME    = "Expo";
-const AI_CREATOR = "Samartha GS";
-
-const MODELS = [
-  "llama-3.3-70b-versatile",
-  "llama-3.1-70b-versatile",
-  "llama-3.1-8b-instant",
-];
-
-// ─────────────────────────────────────────────
-//  YOUR CUSTOM TRAINED DATA
-//  Add facts, FAQs, domain knowledge here.
-//  This is injected into every system prompt as
-//  silent background knowledge.
-// ─────────────────────────────────────────────
-
-const CUSTOM_KNOWLEDGE = `
-// ── REPLACE / EXTEND THIS BLOCK WITH YOUR OWN DATA ──────────────────────────
-
-About the creator:
-- Full name: Samartha GS
-- He built this AI as a personal project
-- Passionate about tech, development, and building cool things
-
-Platform knowledge:
-- This is a personal profile & links platform
-- Users can create profiles with their bio, social links, and custom links
-- Each profile has a unique URL at the platform domain
-
-// ────────────────────────────────────────────────────────────────────────────
-`.trim();
-
-// ─────────────────────────────────────────────
-//  RATE LIMITER  (20 req / min per user)
-// ─────────────────────────────────────────────
-
-const rl = new Map();
-function allowRequest(uid) {
-  const now = Date.now();
-  const e   = rl.get(uid);
-  if (!e || now > e.reset) { rl.set(uid, { n: 1, reset: now + 60_000 }); return true; }
-  if (e.n >= 20) return false;
-  e.n++;
-  return true;
-}
-
-// ─────────────────────────────────────────────
-//  CONVERSATION MEMORY  (last 30 turns per user)
-// ─────────────────────────────────────────────
-
-const mem = new Map();
-const getHist   = (id) => { if (!mem.has(id)) mem.set(id, []); return mem.get(id); };
-const trimHist  = (h)  => { while (h.length > 30) h.splice(0, 2); };
-const clearHist = (id) => mem.set(id, []);
-
-// ─────────────────────────────────────────────
-//  PROFILE FETCH  (internal only — never exposed)
-// ─────────────────────────────────────────────
-
-async function fetchProfile(username) {
-  try {
-    const r = await fetch(
-      `${DB_BASE}/api/profile?username=${encodeURIComponent(username.toLowerCase())}`,
-      { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(6000) }
-    );
-    if (!r.ok) return null;
-    const d = await r.json();
-    return d?.name ? d : null;
-  } catch { return null; }
-}
-
-// Search profiles by name/keyword (requires a /api/search endpoint on your site)
-// Falls back gracefully if not available
-async function searchProfiles(query) {
-  try {
-    const r = await fetch(
-      `${DB_BASE}/api/search?q=${encodeURIComponent(query)}&limit=3`,
-      { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(6000) }
-    );
-    if (!r.ok) return [];
-    const d = await r.json();
-    return Array.isArray(d) ? d.filter(p => p?.name) : (d?.results || []);
-  } catch { return []; }
-}
-
-function calcAge(dob) {
-  if (!dob) return null;
-  const t = new Date(), b = new Date(dob);
-  let a = t.getFullYear() - b.getFullYear();
-  if (t.getMonth() < b.getMonth() ||
-    (t.getMonth() === b.getMonth() && t.getDate() < b.getDate())) a--;
-  return a > 0 ? a : null;
-}
-
-// Profile → plain text knowledge block (injected silently into system prompt)
-function profileToContext(p) {
-  const lines = [];
-  lines.push(`Full name: ${p.name}`);
-  lines.push(`Username: ${p.username}`);
-  lines.push(`Profile URL: ${DB_BASE}/${p.username}`);
-
-  const role = p.interests?.role;
-  if (role) lines.push(`Role: ${role.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase())}`);
-
-  const age = calcAge(p.dob);
-  if (age) lines.push(`Age: ${age}`);
-
-  const bio = p.aboutme || p.bio;
-  if (bio) lines.push(`About: ${bio}`);
-
-  const skills = p.skills || p.interests?.skills;
-  if (Array.isArray(skills) && skills.length) lines.push(`Skills: ${skills.join(", ")}`);
-
-  const location = p.location || p.city;
-  if (location) lines.push(`Location: ${location}`);
-
-  const socials = Object.entries(p.socialProfiles || {}).filter(([, v]) => v?.trim());
-  if (socials.length) {
-    lines.push("Social links:");
-    socials.forEach(([k, v]) => lines.push(`  ${k}: ${v}`));
+// ── Groq key rotation (GROQ_API_KEY_1 … GROQ_API_KEY_10) ──────
+let _ki = 0;
+function nextGroqKey() {
+  const keys = [];
+  for (let i = 1; i <= 10; i++) {
+    const k = process.env[`GROQ_API_KEY_${i}`];
+    if (k) keys.push(k);
   }
-
-  const links = (p.links || []).filter(l => l.url);
-  if (links.length) {
-    lines.push("Other links:");
-    links.forEach(l => lines.push(`  ${l.title || "Link"}: ${l.url}`));
-  }
-
-  if (p.email) lines.push(`Email: ${p.email}`);
-  if (p.favSong) lines.push(`Favourite song: ${p.favSong}${p.favArtist ? " by " + p.favArtist : ""}`);
-
-  return lines.join("\n");
+  if (!keys.length && process.env.GROQ_API_KEY) keys.push(process.env.GROQ_API_KEY);
+  if (!keys.length) throw new Error("No GROQ_API_KEY_* set in environment");
+  return keys[(_ki++) % keys.length];
 }
 
-// ─────────────────────────────────────────────
-//  FUZZY / SMART USERNAME EXTRACTION
-//  Handles: URLs, @mentions, natural language,
-//  multilingual names, partial matches, nicknames
-// ─────────────────────────────────────────────
+// ── In-memory stores (no DB needed) ───────────────────────────
+const histories  = new Map(); // userId → [{role, content}]
+const knownUsers = new Map(); // userId → { firstName, chatId }
+const processing = new Set();
 
-const SKIP_WORDS = new Set([
-  "me","my","the","a","an","is","are","was","you","he","she","they",
-  "it","we","us","our","this","that","who","do","did","does","in","on",
-  "at","to","for","of","or","and","about","with","from","by","up","be",
-  "what","how","when","where","why","can","could","would","should","will",
-  "has","have","had","get","got","give","show","tell","find","search",
-  "ai","bot","expo","help","please","thanks","thank","hey","hi","hello",
-  "yes","no","ok","okay","sure","nice","good","great","cool",
-]);
-
-// Transliteration map for common Indic/other → English approximations
-const TRANSLIT = {
-  "samartha": "samartha", "समर्थ": "samartha", "சமர்த்த": "samartha",
-  "gs": "gs", "जी एस": "gs",
-  // Add more as needed
-};
-
-function normalizeForSearch(str) {
-  const lo = str.toLowerCase().trim();
-  return TRANSLIT[lo] || lo;
-}
-
-// Extract all candidate usernames/names from a message
-function extractCandidates(msg) {
-  const lo = msg.toLowerCase().trim();
-  const candidates = new Set();
-
-  // 1. Direct URL match
-  const urlM = lo.match(/(?:site|\.site|\.com|\.in|\.io)\/([a-z0-9_.+-]{2,30})/);
-  if (urlM) candidates.add(urlM[1]);
-
-  // 2. @mention
-  const atM = lo.match(/@([a-z0-9_.+-]{3,30})/);
-  if (atM) candidates.add(atM[1]);
-
-  // 3. Natural language patterns
-  const patterns = [
-    /who\s+is\s+([a-z0-9_.+\s-]{2,40}?)(?:\?|$|\s+(?:and|in|on|at))/,
-    /who(?:'s|\s+is|\s+are)\s+([a-z0-9_.+\s-]{2,40}?)(?:\?|$)/,
-    /tell\s+me\s+about\s+([a-z0-9_.+\s-]{2,40}?)(?:\?|$)/,
-    /(?:show|get|find|search|look\s*up)\s+(?:profile\s+(?:of\s+)?)?([a-z0-9_.+\s-]{2,40}?)(?:\?|$)/,
-    /info(?:rmation)?\s+(?:about|on)\s+([a-z0-9_.+\s-]{2,40}?)(?:\?|$)/,
-    /(?:contact|email|reach|dm|message)\s+([a-z0-9_.+-]{3,30})/,
-    /(?:what\s+does|what\s+is)\s+([a-z0-9_.+-]{2,30})\s+(?:do|into|about|working)/,
-    /([a-z0-9_.+-]{2,30})'s\s+(?:profile|contact|info|links|socials|number|instagram|twitter|github)/,
-    /profile\s+(?:of|for)\s+([a-z0-9_.+\s-]{2,40}?)(?:\?|$)/,
-    /(?:know|about|regarding)\s+([a-z0-9_.+\s-]{2,40}?)(?:\?|$)/,
-    /(?:link|page|account)\s+(?:of|for)?\s*([a-z0-9_.+-]{2,30})/,
-    // Handle "X ka profile", "X ke baare mein" (Hindi patterns)
-    /([a-z0-9_.+-]{2,30})\s+(?:ka|ki|ke|kaa)\s+/,
-    /([a-z0-9_.+-]{2,30})\s+(?:baare|baarey|vishay|vishaye)/,
-    // Handle "X is who", inverted questions
-    /([a-z0-9_.+-]{2,30})\s+(?:kya|kon|kaun|hai)/,
+// ═══════════════════════════════════════════════════════════════
+//  SMART LENGTH DETECTION
+// ═══════════════════════════════════════════════════════════════
+function needsLongAnswer(text) {
+  const t = text.toLowerCase().trim();
+  const short = [
+    /^(hi|hello|hey|yo|sup|hii|hlo|hai)\b/i,
+    /^(how are you|how r u|wassup|what's up)\b/i,
+    /^(thanks|thank you|thx|ty|ok|okay|cool|nice|great|good|👍|😊)\b/i,
+    /^(yes|no|maybe|idk|lol|haha|hmm)\b/i,
+    /^(what is|define|who is|what's|whats).{0,30}[?]?$/i,
+    /^\d[\d\s\+\-\*\/\^\.]+[\d=]?$/, // math
+    /^.{1,30}[?]?$/, // very short
+    /^(joke|tell me a joke|say something funny)\b/i,
   ];
-
-  for (const pat of patterns) {
-    const m = lo.match(pat);
-    if (m?.[1]) {
-      const raw = m[1].trim();
-      // Split multi-word captures into individual tokens + joined form
-      const tokens = raw.split(/\s+/);
-      tokens.forEach(t => { if (t.length >= 2 && !SKIP_WORDS.has(t)) candidates.add(t); });
-      // Also try joined (e.g. "samartha gs" → "samarthags")
-      const joined = tokens.join("");
-      if (joined.length >= 2 && !SKIP_WORDS.has(joined)) candidates.add(joined);
-      // Also try first token only
-      if (tokens[0] && tokens[0].length >= 2 && !SKIP_WORDS.has(tokens[0])) candidates.add(tokens[0]);
-    }
-  }
-
-  // 4. Raw word extraction — any capitalized or notable word
-  const words = msg.split(/\s+/);
-  for (const w of words) {
-    const clean = w.replace(/[^a-z0-9_.+-]/gi, "").toLowerCase();
-    if (clean.length >= 3 && !SKIP_WORDS.has(clean) && /[a-z]{2,}/.test(clean)) {
-      candidates.add(clean);
-    }
-  }
-
-  return [...candidates].filter(c => c.length >= 2 && !SKIP_WORDS.has(c));
-}
-
-// Try all candidates, return first profile found (with fuzzy fallback via search)
-async function resolveProfile(msg) {
-  const candidates = extractCandidates(msg);
-
-  // 1. Direct lookup for each candidate
-  for (const c of candidates) {
-    const p = await fetchProfile(c);
-    if (p) return { profile: p, matched: c };
-  }
-
-  // 2. Fuzzy: search by each candidate as a name query
-  for (const c of candidates.slice(0, 5)) {
-    const results = await searchProfiles(c);
-    if (results.length > 0) return { profile: results[0], matched: c, fuzzy: true };
-  }
-
-  // 3. Fuzzy: try the whole original message as a search query
-  const queryWords = msg.split(/\s+/)
-    .map(w => w.replace(/[^a-z0-9]/gi, "").toLowerCase())
-    .filter(w => w.length >= 3 && !SKIP_WORDS.has(w))
-    .slice(0, 4)
-    .join(" ");
-
-  if (queryWords) {
-    const results = await searchProfiles(queryWords);
-    if (results.length > 0) return { profile: results[0], matched: queryWords, fuzzy: true };
-  }
-
-  return null;
-}
-
-// Decide if the message is asking about a person
-function isPersonQuery(msg) {
-  const lo = msg.toLowerCase();
-  const personTriggers = [
-    /who\s+is/, /who'?s\s/, /tell\s+me\s+about/, /info\s+(on|about)/,
-    /find\s+(profile|user|person)/, /show\s+(me\s+)?(profile|info)/,
-    /contact\s+info/, /how\s+to\s+(reach|contact|find|dm)/,
-    /(instagram|twitter|github|linkedin|email|number)\s+(of|for)/,
-    /'s\s+(profile|contact|links|socials)/,
-    /profile\s+(of|for)/, /ka\s+profile/, /ke\s+baare/, /kaun\s+hai/,
-    /\b@[a-z0-9_.+-]{2,}/, /linkitin\.site\//,
+  const long = [
+    /explain|how does|how do|why does|why is|describe|elaborate/i,
+    /write (a|an|me|the|some)/i,
+    /code|script|function|program|algorithm|debug|fix (my|this|the)/i,
+    /compare|difference between|pros.*(cons|and)|versus|\bvs\b/i,
+    /essay|article|blog|story|poem|letter|email|report/i,
+    /step.?by.?step|in detail|thoroughly|complete guide|tutorial/i,
+    /summarize|summarise|analyze|analyse|review|critique/i,
+    /translate|meaning in|convert to/i,
+    /help me (with|understand|learn|build|create|fix|write|make)/i,
   ];
-  return personTriggers.some(p => p.test(lo));
+  if (short.some(p => p.test(t))) return false;
+  if (long.some(p => p.test(t))) return true;
+  return t.length > 80;
 }
 
-// ─────────────────────────────────────────────
-//  MESSAGE SPLITTER  (Telegram 4096 char limit)
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+//  SYSTEM PROMPTS
+// ═══════════════════════════════════════════════════════════════
+function systemPrompt(longMode) {
+  return `You are ${BOT_NAME}, an advanced AI assistant created by Samartha. You live inside Telegram.
 
-function splitMsg(text, limit = 4000) {
-  if (text.length <= limit) return [text];
-  const chunks = [];
-  let i = 0;
-  while (i < text.length) {
-    let end = i + limit;
-    if (end < text.length) {
-      const nl = text.lastIndexOf("\n", end);
-      if (nl > i) end = nl;
-    }
-    chunks.push(text.slice(i, end));
-    i = end;
-  }
-  return chunks;
-}
+RESPONSE LENGTH — strictly follow:
+${longMode
+  ? "→ DETAILED MODE: Give a thorough, well-structured answer. Use headers, bullets, numbered steps, code blocks, and examples."
+  : "→ SHORT MODE: Reply in 1–3 sentences only. Be sharp, direct, and friendly."}
 
-// ─────────────────────────────────────────────
-//  FILE URL HELPER
-// ─────────────────────────────────────────────
-
-async function getFileUrl(fileId) {
-  const r = await fetch(
-    `https://api.telegram.org/bot${process.env.BOT_TOKEN}/getFile?file_id=${fileId}`
-  );
-  const d = await r.json();
-  return `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${d.result.file_path}`;
-}
-
-// ─────────────────────────────────────────────
-//  SPEECH → TEXT  (Whisper via Groq)
-// ─────────────────────────────────────────────
-
-async function stt(fileUrl) {
-  try {
-    const audio = await fetch(fileUrl).then(r => r.arrayBuffer());
-    const form  = new FormData();
-    form.append("file",  new Blob([audio]), "audio.ogg");
-    form.append("model", "whisper-large-v3");
-    const r = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
-      method:  "POST",
-      headers: { Authorization: `Bearer ${GROQ_KEY}` },
-      body:    form,
-    });
-    const d = await r.json();
-    return d.text || null;
-  } catch { return null; }
-}
-
-// ─────────────────────────────────────────────
-//  IMAGE ANALYSIS  (vision model)
-// ─────────────────────────────────────────────
-
-async function analyzeImage(url, prompt = "") {
-  try {
-    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method:  "POST",
-      headers: { Authorization: `Bearer ${GROQ_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "llama-3.2-90b-vision-preview",
-        messages: [{
-          role: "user",
-          content: [
-            { type: "image_url", image_url: { url } },
-            { type: "text", text: prompt || "Describe this image in detail." },
-          ],
-        }],
-        max_tokens: 1024,
-      }),
-    });
-    if (!r.ok) return null;
-    const d = await r.json();
-    return d.choices?.[0]?.message?.content?.trim() || null;
-  } catch { return null; }
-}
-
-// ─────────────────────────────────────────────
-//  CORE AI CALL
-// ─────────────────────────────────────────────
-
-async function askAI(ctx, userId, userMsg, imageDesc = "") {
-  const hist = getHist(userId);
-
-  const userContent = imageDesc
-    ? `${userMsg}\n\n[Context: user sent an image — ${imageDesc}]`
-    : userMsg;
-
-  hist.push({ role: "user", content: userContent });
-  trimHist(hist);
-
-  // ── Smart profile resolution (checks if message is asking about a person) ──
-  let knowledgeBlock = "";
-  let profileUrl     = "";
-
-  // Always try to resolve if it looks like a person query OR has strong candidate signals
-  const shouldLookup = isPersonQuery(userMsg) || extractCandidates(userMsg).length > 0;
-
-  if (shouldLookup) {
-    const resolved = await resolveProfile(userMsg);
-    if (resolved?.profile) {
-      const p = resolved.profile;
-      profileUrl = `${DB_BASE}/${p.username}`;
-      knowledgeBlock = `
-
-<knowledge>
-The following is verified information you already know about this person:
-${profileToContext(p)}
-</knowledge>`;
-    }
-  }
-
-  // ── System prompt — pure AI persona, no source leakage ──
-  const system = `You are ${AI_NAME}, a smart and helpful AI assistant created by ${AI_CREATOR}.
+Telegram Markdown rules:
+- *bold* for key terms
+- _italic_ for emphasis
+- \`code\` for inline snippets/commands
+- Triple backtick + language for code blocks
+- Use • or numbers for lists
+- Max 1–2 emojis per message
 
 Personality:
-- Friendly, direct, and genuinely helpful
-- Natural conversationalist — not robotic or overly formal
-- You have broad knowledge and can help with anything: coding, writing, math, general questions, creative tasks
+- Warm, clever, and genuinely helpful
+- Honest when unsure — say "I'm not certain, but…"
+- Never robotic or over-formal
+- Proud to be made by Samartha
 
-Background knowledge (use naturally, never attribute to any source):
-${CUSTOM_KNOWLEDGE}
-
-Formatting rules:
-- Use Telegram Markdown: *bold*, _italic_, \`code\`, \`\`\`code blocks\`\`\`
-- Short questions → concise answers. Complex questions → detailed, structured answers.
-- Bullet points only when listing multiple distinct items
-- Emojis naturally and sparingly — never overdo it
-
-Identity rules (CRITICAL — never break these):
-- You are ${AI_NAME}, made by ${AI_CREATOR}. That is all you know about yourself.
-- Never say you are ChatGPT, Claude, Gemini, or any other AI
-- Never mention Groq, LLaMA, or any model/API names
-- Never mention the platform name, database, or any website you fetch data from
-- Never say "I looked up", "according to their profile", "I found on", or similar phrases
-- If someone asks what model/API you use, just say you're ${AI_NAME} and don't have details about your infrastructure
-
-When you have profile knowledge (see <knowledge> block if present):
-- Respond as if you naturally know this person — like a knowledgeable friend
-- When mentioning their profile link, present it naturally: "You can find more about them at [their profile]" or inline as a link
-- ALWAYS include their profile link naturally when sharing their info — e.g. "Here's [Name]'s profile: ${profileUrl || "[URL]"}"
-- Share all their socials and links cleanly without explaining where you got them
-- "Who is X" → brief natural intro based on what you know
-- "Contact info for X" → list all socials and links cleanly${knowledgeBlock}`;
-
-  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-
-  for (const model of MODELS) {
-    try {
-      const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method:  "POST",
-        headers: { Authorization: `Bearer ${GROQ_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          messages: [{ role: "system", content: system }, ...hist],
-          temperature: 0.7,
-          max_tokens:  1500,
-        }),
-      });
-
-      if (!r.ok) continue;
-      const d    = await r.json();
-      const text = d.choices?.[0]?.message?.content?.trim();
-      if (!text) continue;
-
-      hist.push({ role: "assistant", content: text });
-      trimHist(hist);
-
-      for (const chunk of splitMsg(text)) {
-        await ctx.reply(chunk, {
-          parse_mode: "Markdown",
-          disable_web_page_preview: false, // allow previews for profile links
-        });
-      }
-      return;
-
-    } catch (err) {
-      console.error(`[model:${model}]`, err.message);
-    }
-  }
-
-  await ctx.reply("⚠️ Something went wrong. Please try again.");
+Capabilities: coding, science, history, law, culture, math, writing, translation, analysis, advice, creative tasks.
+Never produce harmful or illegal content.
+Today: ${new Date().toUTCString()}`;
 }
 
-// ─────────────────────────────────────────────
-//  PROFILE CARD BUILDER
-// ─────────────────────────────────────────────
+const IMAGE_SYSTEM = `You are ${BOT_NAME}, an AI vision assistant by Samartha on Telegram.
+Analyze the image thoroughly:
+- Describe what you see clearly
+- Identify objects, people, text, colors, context
+- Give useful insights or answer any question about it
+- Use *bold* for key observations
+- Keep it structured and readable
+Never describe anything harmful or make false claims about real people.`;
 
-function buildCard(p) {
-  const role = p.interests?.role?.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase()) || "";
-  const bio  = p.aboutme || p.bio || "";
-  const age  = calcAge(p.dob);
+const VOICE_SYSTEM = (transcript) =>
+  `You are ${BOT_NAME} by Samartha on Telegram. The user sent a voice message which was transcribed as:\n\n"${transcript}"\n\nRespond naturally to what they said. If it was a question, answer it. If it was a statement, engage with it. Keep the same language they used.`;
 
-  let msg = `👤 *${p.name}*`;
-  if (role) msg += `\n_${role}_`;
-  if (age)  msg += ` · ${age} yrs`;
-  if (bio)  msg += `\n\n${bio}`;
-
-  const socials = Object.entries(p.socialProfiles || {}).filter(([, v]) => v?.trim());
-  if (socials.length) {
-    msg += "\n\n*Socials*";
-    socials.forEach(([k, v]) => (msg += `\n• *${k}:* ${v}`));
-  }
-
-  const links = (p.links || []).filter(l => l.url);
-  if (links.length) {
-    msg += "\n\n*Links*";
-    links.forEach(l => (msg += `\n• [${l.title || "Link"}](${l.url})`));
-  }
-
-  if (p.favSong) msg += `\n\n🎵 _${p.favSong}${p.favArtist ? " — " + p.favArtist : ""}_`;
-  msg += `\n\n🔗 ${DB_BASE}/${p.username}`;
-  return msg;
+// ═══════════════════════════════════════════════════════════════
+//  TELEGRAM HELPERS
+// ═══════════════════════════════════════════════════════════════
+async function tg(method, body) {
+  const r = await fetch(`${TELEGRAM}/${method}`, {
+    method : "POST",
+    headers: { "Content-Type": "application/json" },
+    body   : JSON.stringify(body),
+  });
+  return r.json();
 }
 
-// ─────────────────────────────────────────────
-//  COMMANDS
-// ─────────────────────────────────────────────
+const typing      = (chatId) => tg("sendChatAction", { chat_id: chatId, action: "typing" });
+const uploadPhoto = (chatId) => tg("sendChatAction", { chat_id: chatId, action: "upload_photo" });
+const sleep       = (ms) => new Promise(r => setTimeout(r, ms));
 
-bot.start(async (ctx) => {
-  const name = ctx.from.first_name || "there";
-  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-  await ctx.reply(
-    `Hey *${name}*! 👋 I'm *${AI_NAME}*.\n\nAsk me anything — questions, writing, coding, or just a chat.\n\nYou can also send a *voice message* 🎤 or an *image* 📷 and I'll work with that too.`,
-    { parse_mode: "Markdown" }
+async function send(chatId, text, extra = {}) {
+  const clean = text
+    .replace(/\*\*/g, "*")    // markdown ** → *
+    .replace(/#{1,6} /g, "*") // headings → bold
+    .trim();
+
+  const chunks = [];
+  for (let i = 0; i < clean.length; i += 4000) chunks.push(clean.slice(i, i + 4000));
+
+  let result;
+  for (let i = 0; i < chunks.length; i++) {
+    result = await tg("sendMessage", {
+      chat_id              : chatId,
+      text                 : chunks[i],
+      parse_mode           : "Markdown",
+      disable_web_page_preview: true,
+      ...(i === chunks.length - 1 ? extra : {}),
+    });
+    if (chunks.length > 1) await sleep(300);
+  }
+  return result;
+}
+
+// ── Share keyboard ─────────────────────────────────────────────
+function shareKeyboard(answer, label = "🔗 Share this answer") {
+  const preview = answer.replace(/[*_`]/g, "").slice(0, 130);
+  const shareText = encodeURIComponent(
+    `🤖 *${BOT_NAME}* just answered me:\n\n"${preview}${answer.length > 130 ? "…" : ""}"\n\n` +
+    `Try it yourself 👉 @${BOT_HANDLE}`
   );
-});
+  return {
+    inline_keyboard: [[
+      { text: label, url: `https://t.me/share/url?url=https://t.me/${BOT_HANDLE}&text=${shareText}` },
+      { text: "🔄 New Chat", callback_data: "new_chat" },
+    ]],
+  };
+}
 
-bot.command("help", async (ctx) => {
-  await ctx.reply(
-    `*${AI_NAME} — Commands*\n\n` +
-    `/profile <username> — Show a full profile card\n` +
-    `/contact <username> — Get contact & social links\n` +
-    `/search <name> — Search for a person by name\n` +
-    `/clear — Wipe conversation memory\n` +
-    `/help — This message\n\n` +
-    `_Or just ask naturally:_\n"Who is samarthags?"\n"Tell me about samartha"\n"How do I reach alex?"`,
-    { parse_mode: "Markdown" }
-  );
-});
+// ── Download Telegram file as Buffer ──────────────────────────
+async function downloadTelegramFile(fileId) {
+  const info = await tg("getFile", { file_id: fileId });
+  if (!info.ok) throw new Error("Failed to get file info");
+  const url  = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${info.result.file_path}`;
+  const res  = await fetch(url);
+  if (!res.ok) throw new Error("Failed to download file");
+  return { buffer: await res.arrayBuffer(), path: info.result.file_path };
+}
 
-bot.command("clear", async (ctx) => {
-  clearHist(ctx.from.id);
-  await ctx.reply("Memory cleared. 🧹 Fresh start!");
-});
+// ═══════════════════════════════════════════════════════════════
+//  GROQ — LLM (text)
+// ═══════════════════════════════════════════════════════════════
+function getHist(uid) { if (!histories.has(uid)) histories.set(uid, []); return histories.get(uid); }
+function addMsg(uid, role, content) {
+  const h = getHist(uid);
+  h.push({ role, content });
+  if (h.length > 30) h.splice(0, h.length - 30);
+}
+function clearHist(uid) { histories.set(uid, []); }
 
-bot.command("profile", async (ctx) => {
-  const uname = ctx.message.text.split(/\s+/)[1]?.replace("@", "").toLowerCase();
-  if (!uname) return ctx.reply("Usage: /profile <username>");
+async function askGroq(userId, userText) {
+  addMsg(userId, "user", userText);
+  const longMode = needsLongAnswer(userText);
 
-  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-  const p = await fetchProfile(uname);
-  if (!p) return ctx.reply(`Couldn't find anyone with the username *${uname}*.`, { parse_mode: "Markdown" });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetch(GROQ_URL, {
+      method : "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization : `Bearer ${nextGroqKey()}`,
+      },
+      body: JSON.stringify({
+        model      : process.env.GROQ_MODEL || "llama-3.3-70b-versatile",
+        messages   : [{ role: "system", content: systemPrompt(longMode) }, ...getHist(userId)],
+        max_tokens : longMode ? 2048 : 300,
+        temperature: 0.75,
+        top_p      : 0.9,
+      }),
+    });
+    if (res.status === 429) { await sleep(1200 * (attempt + 1)); continue; }
+    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e?.error?.message || `Groq ${res.status}`); }
+    const data  = await res.json();
+    const reply = data.choices?.[0]?.message?.content?.trim() || "Sorry, I couldn't respond. Try again!";
+    addMsg(userId, "assistant", reply);
+    return reply;
+  }
+  throw new Error("All Groq keys rate-limited. Add more GROQ_API_KEY_N in Vercel env.");
+}
 
-  await ctx.reply(buildCard(p), { parse_mode: "Markdown", disable_web_page_preview: true });
-});
+// ═══════════════════════════════════════════════════════════════
+//  GROQ WHISPER — Voice transcription
+// ═══════════════════════════════════════════════════════════════
+async function transcribeVoice(fileId) {
+  const { buffer, path } = await downloadTelegramFile(fileId);
 
-bot.command("contact", async (ctx) => {
-  const uname = ctx.message.text.split(/\s+/)[1]?.replace("@", "").toLowerCase();
-  if (!uname) return ctx.reply("Usage: /contact <username>");
+  // Determine file type from path
+  const ext = path.split(".").pop() || "ogg";
 
-  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-  const p = await fetchProfile(uname);
-  if (!p) return ctx.reply(`No profile found for *${uname}*.`, { parse_mode: "Markdown" });
+  const form = new FormData();
+  form.append("file", new Blob([buffer], { type: `audio/${ext}` }), `voice.${ext}`);
+  form.append("model", "whisper-large-v3");
+  form.append("response_format", "json");
+  form.append("language", "en"); // change or remove for auto-detect
 
-  const socials = Object.entries(p.socialProfiles || {}).filter(([, v]) => v?.trim());
-  const links   = (p.links || []).filter(l => l.url);
+  // Try keys until one works
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetch(GROQ_WHISPER, {
+      method : "POST",
+      headers: { Authorization: `Bearer ${nextGroqKey()}` },
+      body   : form,
+    });
+    if (res.status === 429) { await sleep(1000 * (attempt + 1)); continue; }
+    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e?.error?.message || "Whisper failed"); }
+    const data = await res.json();
+    return data.text?.trim() || "";
+  }
+  throw new Error("Whisper rate-limited. Add more Groq keys.");
+}
 
-  if (!socials.length && !links.length) {
-    return ctx.reply(`*${p.name}* hasn't added any contact info yet.`, { parse_mode: "Markdown" });
+// ── Handle voice message ───────────────────────────────────────
+async function handleVoice(msg, chatId, userId) {
+  const fileId = msg.voice?.file_id || msg.audio?.file_id;
+
+  await send(chatId, `🎙️ _Transcribing your voice message…_`);
+  await typing(chatId);
+
+  const transcript = await transcribeVoice(fileId);
+  if (!transcript) {
+    return send(chatId, `⚠️ Couldn't understand the audio. Please speak clearly and try again.`);
   }
 
-  let msg = `📬 *${p.name}*\n`;
-  socials.forEach(([k, v]) => (msg += `\n• *${k}:* ${v}`));
-  links.forEach(l   => (msg += `\n• [${l.title || "Link"}](${l.url})`));
-  msg += `\n\n🔗 ${DB_BASE}/${p.username}`;
+  await send(chatId, `🎙️ *You said:*\n_"${transcript}"_\n\n⏳ _Thinking…_`);
+  await typing(chatId);
 
-  await ctx.reply(msg, { parse_mode: "Markdown", disable_web_page_preview: true });
-});
+  // Send transcript to LLM
+  addMsg(userId, "user", transcript);
+  const longMode = needsLongAnswer(transcript);
 
-// NEW: /search command — fuzzy name search
-bot.command("search", async (ctx) => {
-  const query = ctx.message.text.split(/\s+/).slice(1).join(" ").trim();
-  if (!query) return ctx.reply("Usage: /search <name or keyword>");
-
-  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-  const results = await searchProfiles(query);
-
-  if (!results.length) {
-    return ctx.reply(`No profiles found for *${query}*.`, { parse_mode: "Markdown" });
-  }
-
-  let msg = `🔍 *Results for "${query}"*\n`;
-  results.forEach((p, i) => {
-    const role = p.interests?.role?.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase()) || "";
-    msg += `\n${i + 1}. *${p.name}*${role ? ` — _${role}_` : ""}\n   🔗 ${DB_BASE}/${p.username}\n`;
+  const res = await fetch(GROQ_URL, {
+    method : "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${nextGroqKey()}` },
+    body   : JSON.stringify({
+      model    : process.env.GROQ_MODEL || "llama-3.3-70b-versatile",
+      messages : [
+        { role: "system", content: systemPrompt(longMode) },
+        ...getHist(userId),
+      ],
+      max_tokens : longMode ? 2048 : 300,
+      temperature: 0.75,
+    }),
   });
 
-  await ctx.reply(msg, { parse_mode: "Markdown", disable_web_page_preview: true });
-});
+  const data  = await res.json();
+  const reply = data.choices?.[0]?.message?.content?.trim() || "Sorry, couldn't process that.";
+  addMsg(userId, "assistant", reply);
+  await send(chatId, reply, { reply_markup: shareKeyboard(reply, "🔗 Share answer") });
+}
 
-// ─────────────────────────────────────────────
-//  MESSAGE HANDLER
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+//  SARVAM — Image Analysis
+//  Uses Sarvam's multimodal vision endpoint
+// ═══════════════════════════════════════════════════════════════
+async function analyzeImageWithSarvam(fileId, caption) {
+  const { buffer } = await downloadTelegramFile(fileId);
+  const base64     = Buffer.from(buffer).toString("base64");
+  const sarvamKey  = process.env.SARVAM_API_KEY;
 
-bot.on("message", async (ctx) => {
-  const uid = ctx.from.id;
+  if (!sarvamKey) throw new Error("SARVAM_API_KEY not set in environment variables");
 
-  if (!allowRequest(uid)) {
-    return ctx.reply("Slow down a bit ⏳ — you're sending messages too fast.");
-  }
+  const prompt = caption
+    ? `Analyze this image and also answer: "${caption}"`
+    : "Describe and analyze this image in detail.";
 
-  try {
-    // Voice message
-    if (ctx.message.voice) {
-      await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-      const url  = await getFileUrl(ctx.message.voice.file_id);
-      const text = await stt(url);
-      if (!text) return ctx.reply("Couldn't catch that — please try again.");
-      return askAI(ctx, uid, text);
-    }
-
-    // Audio file
-    if (ctx.message.audio) {
-      await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-      const url  = await getFileUrl(ctx.message.audio.file_id);
-      const text = await stt(url);
-      if (!text) return ctx.reply("Couldn't transcribe that audio.");
-      return askAI(ctx, uid, text);
-    }
-
-    // Photo
-    if (ctx.message.photo) {
-      await ctx.telegram.sendChatAction(ctx.chat.id, "upload_photo");
-      const photo   = ctx.message.photo[ctx.message.photo.length - 1];
-      const fileUrl = await getFileUrl(photo.file_id);
-      const caption = ctx.message.caption || "";
-      const desc    = await analyzeImage(fileUrl, caption || "Describe this image in detail.");
-      if (!desc) return ctx.reply("Couldn't read that image — please try again.");
-      return askAI(ctx, uid, caption || "What's in this image?", desc);
-    }
-
-    // Text message
-    if (ctx.message.text) {
-      if (ctx.message.text.startsWith("/")) return; // ignore unknown commands
-      return askAI(ctx, uid, ctx.message.text);
-    }
-
-    ctx.reply("Send me text, a voice message, or an image and I'll help.");
-
-  } catch (err) {
-    console.error("[handler]", err);
-    ctx.reply("⚠️ Something went wrong. Try again.");
-  }
-});
-
-// ─────────────────────────────────────────────
-//  INLINE QUERY  (@bot username in any chat)
-// ─────────────────────────────────────────────
-
-bot.on("inline_query", async (ctx) => {
-  const q = ctx.inlineQuery.query.trim().replace("@", "").toLowerCase();
-  if (!q || q.length < 2) return ctx.answerInlineQuery([]);
-
-  // Try direct lookup first, then fuzzy search
-  let p = await fetchProfile(q);
-  if (!p) {
-    const results = await searchProfiles(q);
-    p = results[0] || null;
-  }
-
-  if (!p) return ctx.answerInlineQuery([]);
-
-  await ctx.answerInlineQuery([{
-    type:        "article",
-    id:          p.username,
-    title:       p.name,
-    description: p.aboutme || p.bio || `${DB_BASE}/${p.username}`,
-    input_message_content: {
-      message_text: buildCard(p),
-      parse_mode:   "Markdown",
+  const res = await fetch(`${SARVAM_URL}/chat/completions`, {
+    method : "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "api-subscription-key": sarvamKey,
     },
-  }]);
-});
+    body: JSON.stringify({
+      model   : "sarvam-m",  // Sarvam's multimodal model
+      messages: [
+        { role: "system", content: IMAGE_SYSTEM },
+        {
+          role   : "user",
+          content: [
+            {
+              type      : "image_url",
+              image_url : { url: `data:image/jpeg;base64,${base64}` },
+            },
+            { type: "text", text: prompt },
+          ],
+        },
+      ],
+      max_tokens : 1024,
+      temperature: 0.5,
+    }),
+  });
 
-// ─────────────────────────────────────────────
-//  WEBHOOK  (Vercel / Next.js)
-// ─────────────────────────────────────────────
-
-export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(200).send("ok");
-  try {
-    await bot.handleUpdate(req.body);
-    res.status(200).send("ok");
-  } catch (err) {
-    console.error("[webhook]", err);
-    res.status(500).send("error");
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    throw new Error(e?.message || `Sarvam vision error ${res.status}`);
   }
+
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content?.trim() || "Couldn't analyze the image.";
+}
+
+// ── Handle image message ───────────────────────────────────────
+async function handleImage(msg, chatId, userId) {
+  // Telegram sends multiple sizes — pick the largest
+  const photos = msg.photo;
+  const fileId  = photos[photos.length - 1].file_id;
+  const caption = msg.caption || "";
+
+  await send(chatId, `🖼️ _Analyzing your image…_`);
+  await uploadPhoto(chatId);
+
+  const analysis = await analyzeImageWithSarvam(fileId, caption);
+
+  addMsg(userId, "assistant", `[Image analysis]: ${analysis}`);
+  await send(chatId,
+    `🖼️ *Image Analysis by ${BOT_NAME}:*\n\n${analysis}`,
+    { reply_markup: shareKeyboard(analysis, "🔗 Share analysis") }
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  COMMANDS
+// ═══════════════════════════════════════════════════════════════
+async function handleCommand(cmd, chatId, userId, firstName) {
+  const name = firstName || "there";
+
+  if (cmd === "/start") {
+    clearHist(userId);
+    return send(chatId,
+      `👋 *Hey ${name}!*\n\n` +
+      `I'm *${BOT_NAME}* — AI created by *Samartha*.\n\n` +
+      `*What I can do:*\n` +
+      `• 💬 Answer any text question\n` +
+      `• 🎙️ Transcribe & reply to *voice messages*\n` +
+      `• 🖼️ Analyze *images* you send\n` +
+      `• 💻 Write & debug code\n` +
+      `• ✍️ Creative writing & translation\n` +
+      `• 🧮 Math & reasoning\n\n` +
+      `_Short question → short answer._\n` +
+      `_Complex question → detailed answer._\n\n` +
+      `Just type, speak, or send an image! 🚀`,
+      {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: "📋 Commands", callback_data: "show_help" },
+            {
+              text: "🔗 Share Bot",
+              url : `https://t.me/share/url?url=https://t.me/${BOT_HANDLE}&text=${encodeURIComponent(`🤖 Meet *${BOT_NAME}* — AI by Samartha!\nText, voice, images — it handles all!\n👉 @${BOT_HANDLE}`)}`,
+            },
+          ]],
+        },
+      }
+    );
+  }
+
+  if (cmd === "/help") {
+    return send(chatId,
+      `📖 *Commands*\n\n` +
+      `/start — Restart & clear memory\n` +
+      `/help — Show this menu\n` +
+      `/clear — Clear conversation memory\n` +
+      `/about — About ${BOT_NAME}\n\n` +
+      `*Features:*\n` +
+      `🎙️ Send a *voice message* → I'll transcribe + reply\n` +
+      `🖼️ Send an *image* → I'll analyze it\n` +
+      `💬 Send *text* → I'll answer (short or detailed)\n` +
+      `🔗 Every reply has a *Share* button\n\n` +
+      `I remember your last *30 messages.*`
+    );
+  }
+
+  if (cmd === "/clear") {
+    clearHist(userId);
+    return send(chatId, `🗑️ *Memory cleared!*\n\nFresh start — what's on your mind?`);
+  }
+
+  if (cmd === "/about") {
+    return send(chatId,
+      `ℹ️ *About ${BOT_NAME}*\n\n` +
+      `👤 *Created by:* Samartha\n` +
+      `🧠 *LLM:* Groq · Llama 3.3 70B\n` +
+      `🎙️ *Voice:* Groq · Whisper Large v3\n` +
+      `🖼️ *Vision:* Sarvam · sarvam-m\n` +
+      `⚡ *Speed:* Ultra-fast with key rotation\n` +
+      `💾 *Memory:* 30 messages/user (no DB)\n\n` +
+      `_Built with ❤️ by Samartha._`,
+      {
+        reply_markup: {
+          inline_keyboard: [[
+            {
+              text: "🔗 Share Bot",
+              url : `https://t.me/share/url?url=https://t.me/${BOT_HANDLE}&text=${encodeURIComponent(`🤖 *${BOT_NAME}* by Samartha — AI for text, voice & images!\n👉 @${BOT_HANDLE}`)}`,
+            },
+          ]],
+        },
+      }
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CALLBACK QUERY
+// ═══════════════════════════════════════════════════════════════
+async function handleCallback(query) {
+  const chatId = query.message?.chat?.id;
+  const userId = String(query.from?.id);
+  await tg("answerCallbackQuery", { callback_query_id: query.id });
+  if (query.data === "new_chat") {
+    clearHist(userId);
+    return send(chatId, `🔄 *New chat started!*\n\nWhat would you like to know?`);
+  }
+  if (query.data === "show_help") {
+    return handleCommand("/help", chatId, userId, query.from?.first_name);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  MAIN MESSAGE HANDLER
+// ═══════════════════════════════════════════════════════════════
+async function handleMessage(msg) {
+  const chatId    = msg.chat?.id;
+  const userId    = String(msg.from?.id);
+  const firstName = msg.from?.first_name || "";
+  const text      = (msg.text || msg.caption || "").trim();
+
+  if (!chatId) return;
+
+  // Remember user
+  knownUsers.set(userId, { firstName, chatId });
+
+  // ── Voice message ──────────────────────────────────────────
+  if (msg.voice || msg.audio) {
+    if (processing.has(userId)) return;
+    processing.add(userId);
+    try {
+      await handleVoice(msg, chatId, userId);
+    } catch (err) {
+      console.error("Voice error:", err.message);
+      await send(chatId, `⚠️ *Voice processing failed*\n\n_${err.message}_`);
+    } finally {
+      processing.delete(userId);
+    }
+    return;
+  }
+
+  // ── Image message ──────────────────────────────────────────
+  if (msg.photo) {
+    if (processing.has(userId)) return;
+    processing.add(userId);
+    try {
+      await handleImage(msg, chatId, userId);
+    } catch (err) {
+      console.error("Image error:", err.message);
+      await send(chatId, `⚠️ *Image analysis failed*\n\n_${err.message}_`);
+    } finally {
+      processing.delete(userId);
+    }
+    return;
+  }
+
+  // ── Text message ───────────────────────────────────────────
+  if (!text) return;
+
+  if (text.startsWith("/")) {
+    const cmd = text.split(" ")[0].split("@")[0].toLowerCase();
+    return handleCommand(cmd, chatId, userId, firstName);
+  }
+
+  if (processing.has(userId)) return;
+  processing.add(userId);
+
+  try {
+    await typing(chatId);
+    const keepTyping = setInterval(() => typing(chatId), 4500);
+    let reply;
+    try {
+      reply = await askGroq(userId, text);
+    } finally {
+      clearInterval(keepTyping);
+    }
+    await send(chatId, reply, { reply_markup: shareKeyboard(reply) });
+  } catch (err) {
+    console.error("Text error:", err.message);
+    await send(chatId, `⚠️ *Error:* ${err.message}\n\nPlease try again.`);
+  } finally {
+    processing.delete(userId);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  VERCEL ENTRY POINT
+// ═══════════════════════════════════════════════════════════════
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(200).send(
+      `🤖 ${BOT_NAME} is running!\n\nSet webhook: POST https://api.telegram.org/bot<TOKEN>/setWebhook\nBody: { "url": "https://your-app.vercel.app/api/bot" }`
+    );
+  }
+  try {
+    const body = req.body;
+    if (body.callback_query) await handleCallback(body.callback_query);
+    else if (body.message)   await handleMessage(body.message);
+  } catch (err) {
+    console.error("Top-level error:", err);
+  }
+  res.status(200).json({ ok: true });
 }
