@@ -1,15 +1,19 @@
 {
-  "name": "expo-telegram-bot",
-  "version": "1.0.0",
-  "description": "Telegram AI bot using Telegraf + Groq",
-  "main": "api/index.js",
+  "name": "samartha-ai-bot",
+  "version": "2.0.0",
+  "description": "Telegram AI Bot by Samartha — Groq LLM + Whisper + Sarvam Vision",
+  "private": true,
   "type": "module",
   "scripts": {
-    "start": "node api/index.js"
+    "dev": "vercel dev",
+    "deploy": "vercel --prod",
+    "webhook": "node scripts/setWebhook.mjs"
   },
-  "dependencies": {
-    "telegraf": "^4.16.3",
-    "node-fetch": "^3.3.2",
-    "form-data": "^4.0.0"
+  "dependencies": {},
+  "devDependencies": {
+    "vercel": "^37.0.0"
+  },
+  "engines": {
+    "node": ">=18.x"
   }
 }
