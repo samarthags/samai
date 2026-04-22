@@ -24,9 +24,23 @@ async function send(chatId, text) {
     },
     body: JSON.stringify({
       chat_id: chatId,
-      text: text
+      text: text,
+      parse_mode: "Markdown"
     })
   });
+}
+
+// ── Format Code Answers ──
+function formatIfCode(text) {
+  const codeKeywords = ["function", "const", "let", "var", "return", "class", "{", "}"];
+
+  const isCode = codeKeywords.some(k => text.includes(k));
+
+  if (isCode) {
+    return "```\n" + text + "\n```";
+  }
+
+  return text;
 }
 
 // ── AI ──
@@ -46,14 +60,15 @@ async function askAI(userText) {
             content: `
 You are Expo.
 
-Created by SGS model (Samartha GS).
-
 Rules:
 - Answer any question.
-- Keep answers short if question is simple.
-- Give detailed answers if question is complex.
-- Be clear and direct.
-- Do not add unnecessary text.
+- Keep answers short if simple, detailed if complex.
+- Always format code using Markdown triple backticks.
+- Never mention APIs, backend, or Groq.
+- If user asks "who made you" or similar, reply:
+  "SGS model by Samartha GS"
+- Otherwise, only say you are Expo.
+- Keep answers clean and direct.
 `
           },
           {
@@ -62,12 +77,14 @@ Rules:
           }
         ],
         temperature: 0.7,
-        max_tokens: 600
+        max_tokens: 700
       })
     });
 
     const data = await res.json();
-    return data.choices?.[0]?.message?.content || "Server error";
+    let reply = data.choices?.[0]?.message?.content || "Server error";
+
+    return formatIfCode(reply);
 
   } catch (e) {
     return "Server error";
@@ -89,7 +106,7 @@ export default async function handler(req, res) {
     const chatId = msg.chat.id;
     const text = msg.text;
 
-    // Username fix
+    // Username
     const name =
       msg.from?.first_name ||
       msg.from?.username ||
@@ -97,7 +114,14 @@ export default async function handler(req, res) {
 
     // ── Start Command ──
     if (text === "/start") {
-      await send(chatId, `Hello ${name}, I'm Expo. How can I help you now?`);
+      await sendTyping(chatId);
+      await new Promise(r => setTimeout(r, 800));
+
+      await send(
+        chatId,
+        `Hello *${name}*, I'm *Expo*. How can I help you now?`
+      );
+
       return res.json({ ok: true });
     }
 
