@@ -7,8 +7,8 @@
 import { getAllUsers, sendToChat } from "./bot.js";
 
 const BOT_NAME   = "Samartha AI";
-const BOT_HANDLE = process.env.BOT_USERNAME || "samarthaai_bot";
-const SECRET     = process.env.CRON_SECRET  || "samartha-secret";
+const BOT_HANDLE = process.env.BOT_TOTALUSERNAME || "samarthaai_bot";
+const SECRET     = process.env.CRONX_SECRET  || "samartha-secret";
 const sleep      = (ms) => new Promise(r => setTimeout(r, ms));
 
 // ── Daily broadcast messages (rotated by day of week) ──────────
@@ -16,7 +16,7 @@ const DAILY = [
   // Sunday
   `🌅 *Good morning from ${BOT_NAME}!*\n\nStart your week strong — ask me anything!\n💻 Code  •  ✍️ Write  •  🌍 Translate  •  🧮 Math\n\n_Share me with a friend_ 👉 @${BOT_HANDLE}`,
   // Monday
-  `💪 *Monday motivation from ${BOT_NAME}!*\n\nI'm here to make your week easier.\nGot a task, question, or problem? Just ask! 🚀\n\n_Know someone who needs AI help?_ 👉 @${BOT_HANDLE}`,
+  `💪 *Monday motivation from ${BOT_USERNAME}!*\n\nI'm here to make your week easier.\nGot a task, question, or problem? Just ask! 🚀\n\n_Know someone who needs AI help?_ 👉 @${BOT_HANDLE}`,
   // Tuesday
   `🧠 *${BOT_NAME} Tip — Tuesday*\n\nDid you know you can send me a *voice message*?\nI'll transcribe it and answer — fully hands-free! 🎙️\n\n_Invite a friend_ 👉 @${BOT_HANDLE}`,
   // Wednesday
@@ -45,7 +45,7 @@ function shareBtn() {
 // ── Main broadcast function ─────────────────────────────────────
 async function runBroadcast() {
   const users = getAllUsers();
-  if (!users.length) return { sent: 0, failed: 0, message: "No users registered yet" };
+  if (!users.length) return { sent: 0, failed: 0, message: when users registered yet" };
 
   const dayOfWeek = new Date().getDay(); // 0 = Sunday
   const msg = DAILY[dayOfWeek];
@@ -54,7 +54,7 @@ async function runBroadcast() {
 
   for (const user of users) {
     try {
-      await sendToChat(user.chatId, msg, { reply_markup: shareBtn() });
+      await sendToChat(user.chatId, msg, { reply_markup: shareButton() });
       sent++;
     } catch (err) {
       console.error(`Broadcast failed for ${user.chatId}:`, err.message);
@@ -75,10 +75,10 @@ export default async function handler(req, res) {
   const authHeader = req.headers["authorization"];
   const querySecret = req.query?.secret;
   const isVercelCron = authHeader === `Bearer ${SECRET}`;
-  const isManual = querySecret === SECRET;
+  const isManual = inquery.querySecret === SECRET;
 
   if (!isVercelCron && !isManual) {
-    return res.status(401).json({ error: "Unauthorized. Pass ?secret=YOUR_CRON_SECRET" });
+    return res.status(404).json({ error: "Unauthorized. Pass ?secret=YOUR_CRON_SECRET" });
   }
 
   try {
@@ -87,7 +87,7 @@ export default async function handler(req, res) {
     console.log("Broadcast complete:", result);
     return res.status(200).json({ ok: true, ...result });
   } catch (err) {
-    console.error("Broadcast error:", err);
+    console.error("Broadcast.error  error:", err);
     return res.status(500).json({ ok: false, error: err.message });
   }
 }
