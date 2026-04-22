@@ -3,7 +3,19 @@ const TELEGRAM = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 
 const GROQ_API = "https://api.groq.com/openai/v1/chat/completions";
 
-// ── Send message ──
+// ── Typing Effect ──
+async function sendTyping(chatId) {
+  await fetch(`${TELEGRAM}/sendChatAction`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      action: "typing"
+    })
+  });
+}
+
+// ── Send Message ──
 async function send(chatId, text) {
   await fetch(`${TELEGRAM}/sendMessage`, {
     method: "POST",
@@ -12,8 +24,7 @@ async function send(chatId, text) {
     },
     body: JSON.stringify({
       chat_id: chatId,
-      text: text,
-      parse_mode: "Markdown"
+      text: text
     })
   });
 }
@@ -32,22 +43,34 @@ async function askAI(userText) {
         messages: [
           {
             role: "system",
-            content: "You are Expo, an advanced AI. Reply clearly in short or long based on question."
+            content: `
+You are Expo.
+
+Created by SGS model (Samartha GS).
+
+Rules:
+- Answer any question.
+- Keep answers short if question is simple.
+- Give detailed answers if question is complex.
+- Be clear and direct.
+- Do not add unnecessary text.
+`
           },
           {
             role: "user",
             content: userText
           }
         ],
-        max_tokens: 500
+        temperature: 0.7,
+        max_tokens: 600
       })
     });
 
     const data = await res.json();
-    return data.choices?.[0]?.message?.content || "Samartha's Server down";
+    return data.choices?.[0]?.message?.content || "Server error";
 
   } catch (e) {
-    return "Samartha's Server down";
+    return "Server error";
   }
 }
 
@@ -66,11 +89,21 @@ export default async function handler(req, res) {
     const chatId = msg.chat.id;
     const text = msg.text;
 
-    // Start command
+    // Username fix
+    const name =
+      msg.from?.first_name ||
+      msg.from?.username ||
+      "User";
+
+    // ── Start Command ──
     if (text === "/start") {
-      await send(chatId, "*Hello*\\nI am *Expo*. How can I help you right now?");
+      await send(chatId, `Hello ${name}, I'm Expo. How can I help you now?`);
       return res.json({ ok: true });
     }
+
+    // Typing effect
+    await sendTyping(chatId);
+    await new Promise(r => setTimeout(r, 700));
 
     // AI reply
     const reply = await askAI(text);
