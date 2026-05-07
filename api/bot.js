@@ -83,7 +83,7 @@ Rules:
     return formatIfCode(reply);
 
   } catch (err) {
-    return "Server error. Try again.";
+    return "Server error.Try again.";
   }
 }
 
