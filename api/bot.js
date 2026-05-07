@@ -114,7 +114,7 @@ export default async function handler(req, res) {
 
       await send(
         chatId,
-        `Hello *${name}*, I'm *Expo* \nHow can I help you?`
+        `Hello *${name}*, I'm *Expo* How can I help you?`
       );
 
       return res.json({ ok: true });
