@@ -1,6 +1,6 @@
 <h1 align="center">EXPO AI</h1>
 <p align="center"><b>An advanced AI-powered Telegram chatbot for unlimited intelligent conversations</b></p>
-<p align="center"><i>Designed and Developed by <b>Samartha GS</b></i></p>
+<p align="center"><i>Designed and Developed by <b>Samartha Gs</b></i></p>
 
 ---
 
@@ -57,4 +57,4 @@ System designed for real-time interaction and scalability
 
 ## Setup (All-in-One)
 ```bash
-git clone https://github.com/your-username/expo-ai.git && cd expo-ai && npm install && npm run dev
+git clone https://github.com/samarthags/expo-ai.git && cd expo-ai && npm install && npm run dev
